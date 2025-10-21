@@ -17,6 +17,11 @@ import argparse
 import importlib
 import os
 import sys
+import decord
+import apex 
+import torch 
+
+print("Is cuda available: ", torch.cuda.is_available())
 
 
 def parse_args():

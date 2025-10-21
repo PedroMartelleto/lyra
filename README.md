@@ -89,9 +89,11 @@ accelerate launch sample.py --config configs/demo/lyra_dynamic.yaml
 #### Testing on your own videos using ViPE
 Follow the installation instructions for [ViPE](https://github.com/nv-tlabs/vipe). Note: ViPE's environment is not compatible with Lyra. We recommend installing ViPE in a separate conda environment. The ViPE results are required for dynamic scene generation. Moreover, we use the depth from ViPE for depth supervision during 3DGS decoder training.
 
+
+
 1) Run ViPE to extract depth, intrinsics, and camera poses (make sure to use the --lyra flag to use the same depth estimator as us):
 ```bash
-vipe infer YOUR_VIDEO.mp4 -p lyra --output <vipe_results_dir>
+vipe infer /iopsstor/scratch/cscs/pmartell/SpatialVid/HQ/videos/group_0043/ffd05eec-318a-58c1-b755-ee95ddc1b69f.mp4 -p lyra --output test_inference/
 ```
 
 2) Define the new data path in src/models/data/registry.py as dataset following the structure of our provided datasets
