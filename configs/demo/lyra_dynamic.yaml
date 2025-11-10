@@ -1,5 +1,5 @@
 # Save all renderings etc. in this folder
-out_dir_inference: outputs/demo/lyra_dynamic
+out_dir_inference: outputs/demo/lyra_dynamic_2
 
 # Define dataset name defined in src/models/data/registry.py
 # dataset_name: lyra_dynamic_demo # Use pre-generated latents
@@ -28,3 +28,5 @@ target_index_manual: [0, 60, 120]
 
 # Update path to where the static Lyra checkpoint is downloaded
 ckpt_path: checkpoints/Lyra/lyra_dynamic.pt
+
+save_gaussians: false

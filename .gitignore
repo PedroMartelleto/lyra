@@ -2,4 +2,4 @@ checkpoints/
 *.pyc
 assets/
 outputs/
-test_inference/
+test_inference*/

@@ -93,8 +93,30 @@ Follow the installation instructions for [ViPE](https://github.com/nv-tlabs/vipe
 
 1) Run ViPE to extract depth, intrinsics, and camera poses (make sure to use the --lyra flag to use the same depth estimator as us):
 ```bash
-vipe infer /iopsstor/scratch/cscs/pmartell/SpatialVid/HQ/videos/group_0043/ffd05eec-318a-58c1-b755-ee95ddc1b69f.mp4 -p lyra --output test_inference/
+vipe infer /iopsstor/scratch/cscs/pmartell/SpatialVid/HQ/videos/group_0043/815e2628-544a-50ea-b746-bef4b9e9b695.mp4 -p lyra --output test_inference/
 ```
+
+<!-- vipe infer /iopsstor/scratch/cscs/pmartell/SpatialVid/HQ/videos/group_0009/781d986f-791d-52f9-801f-34d4a616e072.mp4 -p lyra --output test_inference3/ -->
+
+<!-- /iopsstor/scratch/cscs/pmartell/SpatialVid/HQ/videos/group_0043/815e2628-544a-50ea-b746-bef4b9e9b695.mp4 -> test_inference2 -->
+
+<!-- CUDA_HOME=$CONDA_PREFIX PYTHONPATH=$(pwd) torchrun --nproc_per_node=1 cosmos_predict1/diffusion/inference/gen3c_dynamic_sdg.py \
+    --checkpoint_dir checkpoints \
+    --vipe_path test_inference2/rgb/815e2628-544a-50ea-b746-bef4b9e9b695.mp4 \
+    --video_save_folder assets/demo/dynamic/diffusion_output_generated \
+    --disable_prompt_upsampler \
+    --num_gpus 1 \
+    --foreground_masking \
+    --multi_trajectory -->
+
+<!-- PYTHONPATH=$(pwd) torchrun --nproc_per_node=1 cosmos_predict1/diffusion/inference/gen3c_dynamic_sdg.py \
+    --checkpoint_dir checkpoints \
+    --vipe_path test_inference3/rgb/781d986f-791d-52f9-801f-34d4a616e072.mp4 \
+    --video_save_folder assets/demo/dynamic/diffusion_output_generated \
+    --disable_prompt_upsampler \
+    --num_gpus 1 \
+    --foreground_masking \
+    --multi_trajectory -->
 
 2) Define the new data path in src/models/data/registry.py as dataset following the structure of our provided datasets
 
