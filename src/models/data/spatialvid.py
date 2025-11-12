@@ -19,6 +19,60 @@ from src.models.data.base import BaseDataset
 from src.models.data.datafield import DataField
 from src.models.utils.data import read_exr_depth_to_numpy
 
+import einops
+
+
+def quaternion_to_matrix(quaternions, eps: float = 1e-8):
+    """
+    Convert 4-dimensional quaternions to 3x3 rotation matrices.
+
+    Reference:
+        https://github.com/facebookresearch/pytorch3d/blob/main/pytorch3d/transforms/rotation_conversions.py
+    """
+
+    # Order changed to match scipy format: (i, j, k, r)
+    i, j, k, r = torch.unbind(quaternions, dim=-1)
+    two_s = 2 / ((quaternions * quaternions).sum(dim=-1) + eps)
+
+    # Construct rotation matrix elements using quaternion algebra
+    o = torch.stack(
+        (
+            1 - two_s * (j * j + k * k),  # R[0,0]
+            two_s * (i * j - k * r),  # R[0,1]
+            two_s * (i * k + j * r),  # R[0,2]
+            two_s * (i * j + k * r),  # R[1,0]
+            1 - two_s * (i * i + k * k),  # R[1,1]
+            two_s * (j * k - i * r),  # R[1,2]
+            two_s * (i * k - j * r),  # R[2,0]
+            two_s * (j * k + i * r),  # R[2,1]
+            1 - two_s * (i * i + j * j),  # R[2,2]
+        ),
+        -1,
+    )
+    return einops.rearrange(o, "... (i j) -> ... i j", i=3, j=3)
+
+
+def pose_from_quaternion(pose):
+    """
+    Convert quaternion-based pose representation to 4x4 homogeneous transformation matrices.
+    """
+    # Convert numpy array to torch tensor if needed
+    if type(pose) == np.ndarray:
+        pose = torch.from_numpy(pose)
+    # Add batch dimension if input is 1D
+    if len(pose.shape) == 1:
+        pose = pose[None]
+
+    # Extract translation and quaternion components
+    quat_t = pose[..., :3]  # Translation components [tx, ty, tz]
+    quat_r = pose[..., 3:]  # Quaternion components [qi, qj, qk, qr]
+
+    # Initialize world-to-camera transformation matrix
+    w2c_matrix = torch.eye(4, device=pose.device).repeat(*pose.shape[:-1], 1, 1)
+    w2c_matrix[..., :3, :3] = quaternion_to_matrix(quat_r)  # Set rotation
+    w2c_matrix[..., :3, 3] = quat_t  # Set translation
+    return w2c_matrix
+
 
 class SpatialVid(BaseDataset):
     """
@@ -41,6 +95,22 @@ class SpatialVid(BaseDataset):
         
         # Cache for the true number of frames to avoid re-reading .npy files
         self._frame_count_cache = {}
+
+    def get_video_info(self, video_idx: int) -> dict:
+        record = self.metadata.iloc[video_idx]
+        video_path = self.root_path / record['video path']
+        return {
+            'video_path': str(video_path),
+            'id': record['id'],
+            'group_id': record['group id'],
+        }
+
+    def read_poses_for_video(self, video_idx: int) -> torch.Tensor:
+        record = self.metadata.iloc[video_idx]
+        poses_path = self.root_path / record['annotation path'] / "poses.npy"
+        all_poses = np.load(poses_path)
+        all_poses = pose_from_quaternion(all_poses)
+        return all_poses.float()
 
     def available_data_fields(self) -> List[DataField]:
         return [
@@ -104,13 +174,24 @@ class SpatialVid(BaseDataset):
         for data_field in data_fields:
             if data_field == DataField.IMAGE_RGB:
                 video_path = self.root_path / record['video path']
+                print("Opening video file:", video_path)
                 vr = VideoReader(str(video_path), num_threads=4)
-                frames = vr.get_batch(frame_idxs).asnumpy()
-                output_dict[data_field] = torch.from_numpy(frames).float().permute(0, 3, 1, 2) / 255.0
+                video_frame_count = len(vr)
+                indices = np.linspace(0, video_frame_count - 1, video_frame_count, dtype=int)
+                frames = vr.get_batch(indices).asnumpy()
+                print("Video frame count: ", len(frames))
+                # output_dict[data_field] = torch.from_numpy(frames).float().permute(0, 3, 1, 2) / 255.0
+                # for i in range(len(frame_idxs))[:10]:
+                #     from torchvision.utils import save_image
+                #     save_image(output_dict[data_field][i], f"debug/rgb{frame_idxs[i]}.png")
+                
             elif data_field == DataField.CAMERA_C2W_TRANSFORM:
                 poses_path = self.root_path / record['annotation path'] / "poses.npy"
                 all_poses = np.load(poses_path)
-                output_dict[data_field] = torch.from_numpy(all_poses[frame_idxs]).float()
+                all_poses = pose_from_quaternion(all_poses)
+                output_dict[data_field] = all_poses.float()
+
+                print("Poses shape: ", output_dict[data_field].shape)
             elif data_field == DataField.CAMERA_INTRINSICS:
                 intrinsics_path = self.root_path / record['annotation path'] / "intrinsics.npy"
                 all_intrinsics = np.load(intrinsics_path)
@@ -118,16 +199,23 @@ class SpatialVid(BaseDataset):
                     output_dict[data_field] = torch.from_numpy(np.tile(all_intrinsics, (len(frame_idxs), 1))).float()
                 else:
                     output_dict[data_field] = torch.from_numpy(all_intrinsics[frame_idxs]).float()
+                
+                print("Intrinsics shape: ", output_dict[data_field].shape)
             elif data_field == DataField.METRIC_DEPTH:
                 depth_zip = self._get_zip_handle(video_idx)
                 depths = []
-                for frame_idx in frame_idxs:
+                for frame_idx in range(len(depth_zip.namelist())):
                     frame_name = f"{frame_idx:05d}.exr"
                     with depth_zip.open(frame_name, "r") as f:
                         in_memory_file = io.BytesIO(f.read())
                         exr_file = OpenEXR.InputFile(in_memory_file)
                         depths.append(read_exr_depth_to_numpy(exr_file))
+                print("Depth frame count: ", len(depths))
                 output_dict[data_field] = torch.from_numpy(np.stack(depths, axis=0).astype(np.float32))
+
+                # for i in range(len(frame_idxs))[:10]:
+                #     from torchvision.utils import save_image
+                #     save_image(output_dict[data_field][i], f"debug/depth{frame_idxs[i]}.png")
             else:
                 raise NotImplementedError(f"Data field '{data_field}' not supported.")
         return output_dict
@@ -141,4 +229,5 @@ class SpatialVid(BaseDataset):
             raise FileNotFoundError(f"Depth zip not found: {depth_zip_path}")
         zip_handle = zipfile.ZipFile(depth_zip_path, "r")
         self.zip_descriptors[video_idx] = zip_handle
+        print(f"Opened new zip file: {depth_zip_path}")
         return zip_handle

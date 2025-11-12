@@ -5,6 +5,7 @@ import numpy as np
 from src.models.data.spatialvid_provider import SpatialVidProvider
 from src.rendering.gs import GaussianRenderer
 from src.utils.visu import save_video, create_depth_visu
+from omegaconf import OmegaConf
 
 
 def run_data_pipeline_check():
@@ -34,39 +35,43 @@ def run_data_pipeline_check():
     # --- 1. Define Configuration and Load Data ---
     # This dummy class simulates the OmegaConf object used during training,
     # providing all necessary parameters for the data loader to function correctly.
-    class Opt:
+    config_dict = {
         # --- Data Loading Config ---
-        data_mode = [['spatialvid', 1]] # Use the registry entry for your dataset
-        batch_size = 1
-        num_workers = 0
-        img_size = [256, 256]
+        'data_mode': [['spatialvid', 1]],
+        'batch_size': 1,
+        'num_workers': 0,
+        'img_size': [1280, 720],
 
         # --- Frame Sampling Config ---
-        # We'll load 1 input frame (placeholder) and 100 target frames for rendering.
-        num_input_views = 1
-        num_views = 101 # Total frames to load (input + target)
-        static_frame_sampling = 'uniform' # Sample frames uniformly
+        'num_input_views': 1,
+        'num_views': 101,
+        'static_frame_sampling': 'uniform',
         
-        # --- Multi-View/Video Config ---
-        is_static = True # Process as a collection of static scenes
-        num_input_multi_views = 1
-        sample_num_input_multi_views = False
-        static_view_indices_sampling = 'fixed'
-        static_view_indices_fixed = ['0'] # For datasets with one video per scene
+        'is_static': True,
+        'num_input_multi_views': 1,
+        'sample_num_input_multi_views': False,
+        'static_view_indices_sampling': 'fixed',
+        'static_view_indices_fixed': ['0'],
         
-        # --- Technical Flags ---
-        subsample_data_train_val = False # Use the whole dataset
-        load_latents = False # We are loading RGB images, not pre-computed latents
-        use_depth = True # We want to load and verify depth maps
-        relative_translation_scale = True # Normalize camera translation
-        time_embedding = False # Not needed for this check
-        
-        # --- Add other default attributes to prevent errors ---
-        def __getattr__(self, name):
-             # Return a default value for any other requested attribute
-            return None
+        'use_plucker': False,
+        'plucker_embedding_vae': False,
+        'compute_plucker_cuda': True,
+        'compute_plucker_dtype': None,
+        'plucker_embedding_vae_fuse_type': None,
+        'relative_translation_scale': True,
 
-    opt = Opt()
+        'subsample_data_train_val': False,
+        'load_latents': False,
+        'use_depth': True,
+        'time_embedding': False,
+        'plucker_embedding_vae': False,
+        'time_embedding_vae': False
+    }
+
+    # Create an OmegaConf object from the dictionary
+    default_cfg = OmegaConf.load("configs/training/default.yaml")
+    opt = OmegaConf.create(config_dict)
+    opt = OmegaConf.merge(default_cfg, opt)
     print("Initializing dataset provider for 'spatialvid'...")
     dataset = SpatialVidProvider("spatialvid", opt, training=False)
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=1)
@@ -83,7 +88,12 @@ def run_data_pipeline_check():
     
     print("Loading one batch of data...")
     try:
-        batch = next(iter(dataloader))
+        count = 0
+        for batch in dataloader:
+            count += 1
+            if count > 2:
+                break
+        
     except StopIteration:
         print("\nERROR: The dataloader is empty. This might be because:")
         print("1. The `root_path` in `src/models/data/registry.py` is incorrect.")
@@ -106,9 +116,9 @@ def run_data_pipeline_check():
         # Position (x, y, z) at origin
         0.0, 0.0, 0.0,
         # Opacity (fully opaque)
-        1.0,
+        0.5,
         # Scale (a sphere of radius ~0.5)
-        0.5, 0.5, 0.5,
+        0.15, 0.15, 0.15,
         # Rotation (identity quaternion)
         1.0, 0.0, 0.0, 0.0,
         # Color (red)
@@ -120,13 +130,15 @@ def run_data_pipeline_check():
     gaussians = manual_gaussian.unsqueeze(0).expand(B, -1, -1) # (B, N, 14)
 
     # --- 3. Render the Scene ---
-    class RenderOpt:
-        img_size = opt.img_size
-        znear = 0.1
-        zfar = 500
+    render_opt_dict = {
+        'img_size': opt.img_size,
+        'znear': 0.1,
+        'zfar': 500,
+    }
+    render_opt = OmegaConf.create(render_opt_dict)
 
     print("Rendering the dummy scene with loaded camera poses...")
-    renderer = GaussianRenderer(RenderOpt())
+    renderer = GaussianRenderer(render_opt)
     bg_color = torch.ones(3, device='cuda', dtype=torch.float32) # White background
 
     render_output = renderer.render(gaussians, cam_view, bg_color, intrinsics)
@@ -151,7 +163,7 @@ def run_data_pipeline_check():
     gt_depth_vis = gt_depth_vis.clamp(0, 1)
 
     # Concatenate along the width dimension
-    comparison_grid = torch.cat([gt_video, rendered_video, gt_depth_vis], dim=-1)
+    comparison_grid = torch.cat([gt_video, rendered_video, gt_depth_vis], dim=-1).detach().cpu()
 
     # The save_video function expects (B, T, C, H, W)
     print(f"Saving comparison video to '{output_dir}/exp0_pipeline_check.mp4'...")

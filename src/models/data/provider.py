@@ -128,7 +128,7 @@ class Provider(Dataset):
         intrinsics = intrinsics[num_total_input_frames:]
 
         # Split time_embeddings into source and target for vae encoder (assume last one is target index)
-        if self.opt.time_embedding_vae:
+        if self.opt.time_embedding_vae and self.opt.time_embedding:
             time_embeddings_target = time_embeddings[[-1]]
             time_embeddings = time_embeddings[:self.opt.num_input_views]
         else:
