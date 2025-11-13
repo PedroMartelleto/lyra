@@ -111,14 +111,14 @@ def run_data_pipeline_check():
     print(f"Successfully loaded a batch of data: {V} frames of size {H}x{W}.")
 
     # --- 2. Create a Dummy 3DGS Scene ---
-    # A single, large, red Gaussian sphere at the world origin.
+    # A single, large, red Gaussian sphere placed in front of the origin.
     manual_gaussian = torch.tensor([[
-        # Position (x, y, z) at origin
-        0.0, 0.0, 0.0,
-        # Opacity (fully opaque)
-        0.5,
+        # Position (x, y, z) a few units in front of the camera system's origin
+        0.0, 0.0, 5.0,
+        # Opacity (nearly opaque)
+        0.99,
         # Scale (a sphere of radius ~0.5)
-        0.15, 0.15, 0.15,
+        0.5, 0.5, 0.5,
         # Rotation (identity quaternion)
         1.0, 0.0, 0.0, 0.0,
         # Color (red)
@@ -139,6 +139,7 @@ def run_data_pipeline_check():
 
     print("Rendering the dummy scene with loaded camera poses...")
     renderer = GaussianRenderer(render_opt)
+    gaussians = renderer.load_ply("/iopsstor/scratch/cscs/pmartell/lyra/outputs/demo/lyra_dynamic/static_view_indices_fixed_5_0_1_2_3_4/lyra_dynamic_demo_generated/0/gaussians/gaussians_0.ply")
     bg_color = torch.ones(3, device='cuda', dtype=torch.float32) # White background
 
     render_output = renderer.render(gaussians, cam_view, bg_color, intrinsics)
@@ -159,6 +160,7 @@ def run_data_pipeline_check():
     
     # Clamp videos to valid range [0, 1] before saving
     gt_video = gt_video.clamp(0, 1)
+    print(rendered_video.min(), rendered_video.max())
     rendered_video = rendered_video.clamp(0, 1)
     gt_depth_vis = gt_depth_vis.clamp(0, 1)
 

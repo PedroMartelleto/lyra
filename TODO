@@ -1,2 +1,40 @@
+- TODO: Check if depth / camera poses are consistent with whichever format lyra expects
+
+Experiment 1: Single Forward Pass
+
+**Goal:** Ensure the new `Generative3DGSModel` can process a batch of data without crashing and that all internal tensor dimensions are correct.
+
+**Setup:** A new script, `check_forward_pass.py`.
+
+**Steps:**
+1.  Load a batch of data, just like in Experiment 0.
+2.  Extract the conditioning image and encode it with the VAE to get `condition_embed`.
+3.  Create a tensor of random noise representing the initial noisy Gaussians: `(B, num_gaussians_generative, 14)`.
+4.  Generate random diffusion timesteps.
+5.  Pass all three (`noisy_gaussians`, `timesteps`, `condition_embed`) into your `model.forward()` method.
+
+**Expected Outcome:** The script runs to completion without any errors. Check that the output of the model (the predicted noise) has the exact same shape as the input `noisy_gaussians`.
+
+Experiment 2: Overfitting a Single Scene (The Litmus Test)
+
+**Goal:** Prove that the model and the entire training pipeline are capable of learning. If the model can't even memorize one sample, it will never learn from a large dataset. This is the most important sanity check.
+
+**Setup:** A minimal training script, `train_overfit.py`, that hard-codes the data loader to return the **same exact scene** over and over again.
+
+**Steps:**
+1.  Adapt your `train_generative.py` script.
+2.  Modify the `Provider` or `DataLoader` to only use a single video file from SpatialVID.
+3.  In the training loop, keep track of the loss.
+4.  Run the training for a few hundred steps (e.g., 500-1000).
+5.  Periodically (e.g., every 100 steps), perform a full generation/inference loop using a *fixed* initial noise tensor and the conditioning frame from your single scene. Render the generated 3DGS from all camera views and save the video.
+
+**Expected Outcome:**
+1.  **Loss Plummets:** The training loss should decrease consistently and significantly. It should go from a high initial value to a very small one. If it stagnates, oscillates, or becomes `NaN`, there is a bug in the gradient flow.
+2.  **Visual Improvement:** The sequence of saved videos will show the model's progress.
+    *   `step_0.mp4`: Will look like random noise.
+    *   `step_100.mp4`: Some blurry shapes might appear.
+    *   `step_500.mp4`: Should look very similar to the ground truth video.
+    *   `step_1000.mp4`: Should be an almost perfect reconstruction of the ground truth video.
+
 - Test self-distillation
 - Think about 3DGS alternatives

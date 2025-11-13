@@ -76,11 +76,12 @@ def pose_from_quaternion(pose):
 
 class SpatialVid(BaseDataset):
     """
-    FINAL VERSION: A fully compliant and resilient dataset loader for SpatialVID.
+    A fully compliant and resilient dataset loader for SpatialVID.
 
     This version treats the length of the 'poses.npy' array as the source of
     truth for the number of frames, making it robust to inconsistencies in the
-    metadata CSV file.
+    metadata CSV file. It also handles downsampling of higher-framerate RGB
+    videos to match the framerate of poses and depth maps.
     """
     MAX_ZIP_DESCRIPTORS = 10
 
@@ -141,7 +142,6 @@ class SpatialVid(BaseDataset):
         poses_path = self.root_path / record['annotation path'] / "poses.npy"
         
         if not poses_path.exists():
-            print(f"Warning: poses.npy not found for index {video_idx}. Returning 0 frames.")
             self._frame_count_cache[video_idx] = 0
             return 0
             
@@ -152,46 +152,48 @@ class SpatialVid(BaseDataset):
                 frame_count = shape[0]
                 self._frame_count_cache[video_idx] = frame_count
                 return frame_count
-        except Exception as e:
-            print(f"Warning: Could not read header of {poses_path}. Loading full array. Error: {e}")
-            # Fallback to loading the whole array if header reading fails
+        except Exception:
             all_poses = np.load(poses_path)
             frame_count = all_poses.shape[0]
             self._frame_count_cache[video_idx] = frame_count
             return frame_count
 
-
     def _read_data(self, video_idx: int, frame_idxs: List[int], view_idxs: List[int], data_fields: List[DataField]) -> dict[DataField, Any]:
         record = self.metadata.iloc[video_idx]
         output_dict = {"__key__": record['id']}
 
-        # We can add a final safety check here
+        if not frame_idxs:
+            return output_dict
+
         max_requested_idx = max(frame_idxs)
         true_frame_count = self.num_frames(video_idx)
         if max_requested_idx >= true_frame_count:
-            raise IndexError(f"FATAL in _read_data: Requested frame index {max_requested_idx} is out of bounds for video {video_idx} which has {true_frame_count} frames.")
+            raise IndexError(f"Requested frame index {max_requested_idx} is out of bounds for video {video_idx} which has {true_frame_count} frames.")
 
         for data_field in data_fields:
             if data_field == DataField.IMAGE_RGB:
                 video_path = self.root_path / record['video path']
-                print("Opening video file:", video_path)
                 vr = VideoReader(str(video_path), num_threads=4)
-                video_frame_count = len(vr)
-                indices = np.linspace(0, video_frame_count - 1, video_frame_count, dtype=int)
-                frames = vr.get_batch(indices).asnumpy()
-                print("Video frame count: ", len(frames))
-                # output_dict[data_field] = torch.from_numpy(frames).float().permute(0, 3, 1, 2) / 255.0
-                # for i in range(len(frame_idxs))[:10]:
-                #     from torchvision.utils import save_image
-                #     save_image(output_dict[data_field][i], f"debug/rgb{frame_idxs[i]}.png")
                 
+                num_rgb_frames = len(vr)
+                num_pose_frames = self.num_frames(video_idx)
+                
+                if num_pose_frames == 0:
+                    output_dict[data_field] = torch.empty((0, 3, 0, 0))
+                    continue
+
+                rgb_indices_map = np.linspace(0, num_rgb_frames - 1, num=num_pose_frames, dtype=int)
+                selected_rgb_indices = rgb_indices_map[frame_idxs]
+                
+                frames = vr.get_batch(selected_rgb_indices).asnumpy()
+                output_dict[data_field] = torch.from_numpy(frames).float().permute(0, 3, 1, 2) / 255.0
+
             elif data_field == DataField.CAMERA_C2W_TRANSFORM:
                 poses_path = self.root_path / record['annotation path'] / "poses.npy"
                 all_poses = np.load(poses_path)
-                all_poses = pose_from_quaternion(all_poses)
-                output_dict[data_field] = all_poses.float()
+                selected_poses = all_poses[frame_idxs]
+                output_dict[data_field] = pose_from_quaternion(selected_poses).float()
 
-                print("Poses shape: ", output_dict[data_field].shape)
             elif data_field == DataField.CAMERA_INTRINSICS:
                 intrinsics_path = self.root_path / record['annotation path'] / "intrinsics.npy"
                 all_intrinsics = np.load(intrinsics_path)
@@ -199,23 +201,26 @@ class SpatialVid(BaseDataset):
                     output_dict[data_field] = torch.from_numpy(np.tile(all_intrinsics, (len(frame_idxs), 1))).float()
                 else:
                     output_dict[data_field] = torch.from_numpy(all_intrinsics[frame_idxs]).float()
-                
-                print("Intrinsics shape: ", output_dict[data_field].shape)
+
             elif data_field == DataField.METRIC_DEPTH:
                 depth_zip = self._get_zip_handle(video_idx)
                 depths = []
-                for frame_idx in range(len(depth_zip.namelist())):
+                for frame_idx in frame_idxs:
                     frame_name = f"{frame_idx:05d}.exr"
-                    with depth_zip.open(frame_name, "r") as f:
-                        in_memory_file = io.BytesIO(f.read())
-                        exr_file = OpenEXR.InputFile(in_memory_file)
-                        depths.append(read_exr_depth_to_numpy(exr_file))
-                print("Depth frame count: ", len(depths))
-                output_dict[data_field] = torch.from_numpy(np.stack(depths, axis=0).astype(np.float32))
+                    try:
+                        with depth_zip.open(frame_name, "r") as f:
+                            in_memory_file = io.BytesIO(f.read())
+                            exr_file = OpenEXR.InputFile(in_memory_file)
+                            depths.append(read_exr_depth_to_numpy(exr_file))
+                    except KeyError:
+                        if depths:
+                            depths.append(np.zeros_like(depths[0]))
+                
+                if depths:
+                    output_dict[data_field] = torch.from_numpy(np.stack(depths, axis=0).astype(np.float32))
+                else:
+                    output_dict[data_field] = torch.empty((len(frame_idxs), 0, 0))
 
-                # for i in range(len(frame_idxs))[:10]:
-                #     from torchvision.utils import save_image
-                #     save_image(output_dict[data_field][i], f"debug/depth{frame_idxs[i]}.png")
             else:
                 raise NotImplementedError(f"Data field '{data_field}' not supported.")
         return output_dict
@@ -229,5 +234,4 @@ class SpatialVid(BaseDataset):
             raise FileNotFoundError(f"Depth zip not found: {depth_zip_path}")
         zip_handle = zipfile.ZipFile(depth_zip_path, "r")
         self.zip_descriptors[video_idx] = zip_handle
-        print(f"Opened new zip file: {depth_zip_path}")
         return zip_handle
