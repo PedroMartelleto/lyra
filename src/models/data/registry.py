@@ -8,7 +8,7 @@ dataset_registry['spatialvid'] = {
     'cls': SpatialVidWrapper,
     'kwargs': {
         "cls": SpatialVid,
-        "root_path": "/iopsstor/scratch/cscs/pmartell/SpatialVid/HQ",
+        "root_path": "../SpatialVid/HQ",
         "metadata_csv": "data/train/SpatialVID_HQ_metadata.csv",
         "is_static": True,
         "is_multi_view": False,

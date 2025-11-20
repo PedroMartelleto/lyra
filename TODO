@@ -1,4 +1,14 @@
+cd lyra
+sudo docker run -it --gpus all --ipc=host --ulimit memlock=-1 --ulimit stack=67108864 \
+    -v $(pwd):/workspace \
+    -v $(pwd)/../SpatialVid:/SpatialVid \
+    lyra /bin/bash
+
 - TODO: Check if depth / camera poses are consistent with whichever format lyra expects
+
+
+
+--------------------------------------------------------
 
 Experiment 1: Single Forward Pass
 

@@ -43,7 +43,7 @@ def analyze_dataset_statistics(num_videos_to_check=15):
 
     # We instantiate the underlying SpatialVid dataset directly, not the Provider
     dataset = SpatialVid(
-        root_path="/iopsstor/scratch/cscs/pmartell/SpatialVid/HQ",  # Assuming 'spatialvid' maps to the root path
+        root_path="../SpatialVid/HQ",  # Assuming 'spatialvid' maps to the root path
         metadata_csv=dataset_registry['spatialvid']['kwargs']['metadata_csv']
     )
     
@@ -116,7 +116,7 @@ if __name__ == "__main__":
     dataset_registry = {
         'spatialvid': {
             'kwargs': {
-                "root_path": "/iopsstor/scratch/cscs/pmartell/SpatialVid/HQ",
+                "root_path": "../SpatialVid/HQ",
                 "metadata_csv": "data/train/SpatialVID_HQ_metadata.csv",
             }
         }

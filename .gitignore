@@ -4,3 +4,5 @@ assets/
 outputs/
 test_inference*/
 sanity_checks/
+*.zip
+vipe/

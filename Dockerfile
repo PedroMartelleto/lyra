@@ -123,9 +123,11 @@ RUN unzip /tmp/Video_Codec_SDK_13.0.19.zip -d /tmp/ && \
 RUN mkdir -p /usr/local/cuda-12.8/lib64
 
 # Create symlink for libnvcuvid.so in CUDA lib64
-RUN mkdir -p /usr/local/cuda-12.8/lib64 && \
-    ln -s /usr/local/nvidia-video-codec-sdk/Lib/linux/stubs/aarch64/libnvcuvid.so /usr/local/cuda-12.8/lib64/libnvcuvid.so && \
-    ln -s /usr/local/nvidia-video-codec-sdk/Lib/linux/stubs/aarch64/libnvidia-encode.so /usr/local/cuda-12.8/lib64/libnvidia-encode.so
+RUN mkdir -p /usr/local/cuda-12.8/lib64
+
+RUN ARCH=$(uname -m) && \
+    ln -s /usr/local/nvidia-video-codec-sdk/Lib/linux/stubs/$ARCH/libnvcuvid.so /usr/local/cuda-12.8/lib64/libnvcuvid.so && \
+    ln -s /usr/local/nvidia-video-codec-sdk/Lib/linux/stubs/$ARCH/libnvidia-encode.so /usr/local/cuda-12.8/lib64/libnvidia-encode.so
 
 # Set environment variables so CMake can find headers
 ENV NVCUVID_INCLUDE_DIR=/usr/local/nvidia-video-codec-sdk/include
@@ -207,6 +209,7 @@ FROM vipe-deps AS final
 RUN pip uninstall -y causal-conv1d mamba-ssm mamba-ssm[causal-conv1d] || true
 RUN pip install mamba-ssm[causal-conv1d]==2.2.6.post3 --no-build-isolation --no-deps
 RUN pip install causal-conv1d==1.5.3.post1 --no-build-isolation
+RUN pip install torchmetrics==1.8.2 lpips==0.1.4 --no-build-isolation
 
 # Sanity checks
 RUN python -c "import torch; print('PyTorch version:', torch.__version__)"
