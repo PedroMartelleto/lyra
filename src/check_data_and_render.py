@@ -40,7 +40,7 @@ def run_data_pipeline_check():
         'data_mode': [['spatialvid', 1]],
         'batch_size': 1,
         'num_workers': 0,
-        'img_size': [1280, 720],
+        'img_size': [720, 1280],
 
         # --- Frame Sampling Config ---
         'num_input_views': 1,
@@ -139,7 +139,6 @@ def run_data_pipeline_check():
 
     print("Rendering the dummy scene with loaded camera poses...")
     renderer = GaussianRenderer(render_opt)
-    gaussians = renderer.load_ply("/iopsstor/scratch/cscs/pmartell/lyra/outputs/demo/lyra_dynamic/static_view_indices_fixed_5_0_1_2_3_4/lyra_dynamic_demo_generated/0/gaussians/gaussians_0.ply")
     bg_color = torch.ones(3, device='cuda', dtype=torch.float32) # White background
 
     render_output = renderer.render(gaussians, cam_view, bg_color, intrinsics)
@@ -165,7 +164,7 @@ def run_data_pipeline_check():
     gt_depth_vis = gt_depth_vis.clamp(0, 1)
 
     # Concatenate along the width dimension
-    comparison_grid = torch.cat([gt_video, rendered_video, gt_depth_vis], dim=-1).detach().cpu()
+    comparison_grid = torch.cat([gt_video.detach().cpu(), rendered_video.detach().cpu(), gt_depth_vis.detach().cpu()], dim=-1).detach().cpu()
 
     # The save_video function expects (B, T, C, H, W)
     print(f"Saving comparison video to '{output_dir}/exp0_pipeline_check.mp4'...")

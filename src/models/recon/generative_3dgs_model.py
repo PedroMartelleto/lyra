@@ -11,8 +11,6 @@ import torch.nn.functional as F
 # We reuse the core building blocks from Lyra's original model
 from src.models.utils.model import get_model_blocks
 from src.rendering.gs import GaussianRenderer
-
-# TODO: You will need to install the diffusers library: pip install diffusers
 from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 
 class DenoisingTransformer(nn.Module):
@@ -91,7 +89,6 @@ class Generative3DGSModel(nn.Module):
         self.gaussian_renderer = GaussianRenderer(opt)
         self.num_gaussians = opt.num_gaussians_generative # A new config parameter
 
-        # TODO: Initialize a diffusion scheduler from the diffusers library
         self.noise_scheduler = DDPMScheduler(
             num_train_timesteps=opt.diffusion_timesteps,
             beta_schedule="squaredcos_cap_v2"

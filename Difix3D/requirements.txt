@@ -1,0 +1,2 @@
+torchmetrics==1.8.2
+lpips==0.1.4
