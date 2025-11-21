@@ -8,7 +8,7 @@ dataset_registry['spatialvid'] = {
     'cls': SpatialVidWrapper,
     'kwargs': {
         "cls": SpatialVid,
-        "root_path": "/iopsstor/scratch/cscs/pmartell/SpatialVid/HQ",
+        "root_path": "../SpatialVid/HQ",
         "metadata_csv": "data/train/SpatialVID_HQ_metadata.csv",
         "is_static": True,
         "is_multi_view": False,
@@ -16,7 +16,7 @@ dataset_registry['spatialvid'] = {
     'scene_scale': 1.,
     'max_gap': 121,
     'min_gap': 45,
-    'is_w2c': False,
+    'is_w2c': True,
 }
 
 dataset_registry['default'] = {
