@@ -32,8 +32,8 @@ def process_video_shard(gpu_id, video_tasks, ref_video_path):
     )
     pipe.to(device)
 
-    # Load External Reference (Used for Frame 0 only)
-    print(f"[{device}] Loading initial external reference frame...")
+    # Load Reference Image Source (Frame 0 of reference video)
+    print(f"[{device}] Loading reference frame source...")
     try:
         vr_ref = VideoReader(ref_video_path, ctx=cpu(0))
         ref_frame_np = vr_ref[0].asnumpy()
@@ -43,7 +43,7 @@ def process_video_shard(gpu_id, video_tasks, ref_video_path):
         return
 
     for input_path, output_path in video_tasks:
-        print(f"[{device}] Processing (Autoregressive): {input_path} -> {output_path}")
+        print(f"[{device}] Processing: {input_path} -> {output_path} (Side-by-Side)")
         
         if not os.path.exists(input_path):
             print(f"[{device}] Warning: Input file not found: {input_path}")
@@ -58,17 +58,16 @@ def process_video_shard(gpu_id, video_tasks, ref_video_path):
             # Get input dimensions
             h, w, _ = vr[0].shape 
             
-            # Prepare initial reference (Frame 0) by resizing external ref if needed
+            # Resize reference image to match input video dimensions
             if source_ref_image.size != (w, h):
-                initial_ref_image = source_ref_image.resize((w, h), Image.LANCZOS)
+                ref_image_resized = source_ref_image.resize((w, h), Image.LANCZOS)
             else:
-                initial_ref_image = source_ref_image
+                ref_image_resized = source_ref_image
 
             # Setup Video Writer
+            # Note: The output width will be 2 * w, imageio handles this automatically
+            # on the first frame written.
             writer = imageio.get_writer(output_path, fps=fps, codec='libx264')
-
-            # Variable to store the output of the previous frame
-            previous_output_pil = None
 
             # Process frame by frame
             for i in range(total_frames):
@@ -76,30 +75,21 @@ def process_video_shard(gpu_id, video_tasks, ref_video_path):
                 frame_np = vr[i].asnumpy()
                 input_image = Image.fromarray(frame_np)
 
-                # --- REFERENCE SELECTION LOGIC ---
-                if i == 0:
-                    # Frame 0: Use external reference video
-                    current_ref_image = initial_ref_image
-                else:
-                    # Frame > 0: Use the 'fixed' image from the previous step
-                    current_ref_image = previous_output_pil
-                # ---------------------------------
-
                 with torch.no_grad():
                     output_image_pil = pipe(
                         prompt="remove degradation",
                         image=input_image,
-                        ref_image=current_ref_image,
+                        ref_image=ref_image_resized,
                         num_inference_steps=1,
                         timesteps=[199],
                         guidance_scale=0.0
                     ).images[0]
 
-                # Update previous output for the next iteration
-                previous_output_pil = output_image_pil
-
-                # Create Side-by-Side: [Before | After]
+                # Convert output to numpy (After)
                 output_np = np.array(output_image_pil)
+                
+                # Create Side-by-Side: [Before | After]
+                # Concatenate along width (axis 1)
                 combined_frame = np.concatenate((frame_np, output_np), axis=1)
 
                 writer.append_data(combined_frame)
@@ -118,9 +108,9 @@ def process_video_shard(gpu_id, video_tasks, ref_video_path):
 def main():
     # --- Configuration ---
     num_gpus = 4
-    base_input_dir = "outputs/demo/lyra_dynamic/static_view_indices_fixed_5_0_1_2_3_4/lyra_dynamic_demo_generated/0/raw"
-    output_dir = "outputs/difix"
-    ref_video_path = "test_inference/rgb/ffd05eec-318a-58c1-b755-ee95ddc1b69f.mp4"
+    base_input_dir = "outputs/demo/lyra_dynamic_2/static_view_indices_fixed_5_0_1_2_3_4/lyra_dynamic_demo_generated/0/raw"
+    output_dir = "outputs/difix_2"
+    ref_video_path = "test_inference2/rgb/815e2628-544a-50ea-b746-bef4b9e9b695.mp4"
     
     os.makedirs(output_dir, exist_ok=True)
 
