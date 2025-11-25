@@ -8,8 +8,6 @@ from PIL import Image
 import numpy as np
 import imageio
 
-# --- PATH FIX ---
-# Add the relative path 'Difix3D/src' to sys.path
 current_dir = os.getcwd()
 module_path = os.path.join(current_dir, "Difix3D", "src")
 if module_path not in sys.path:
