@@ -8,5 +8,5 @@ if [ "$debug_jobs" -eq 0 ]; then
     srun --partition=debug --time=01:00:00 --environment=difix -A a144 --pty bash
 else
     echo "Debug partition is busy. Using normal..."
-    srun --partition=normal --time=00:30:00 --environment=difix -A a144 --pty bash
+    srun --partition=normal --time=01:00:00 --environment=difix -A a144 --pty bash
 fi

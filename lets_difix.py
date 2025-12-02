@@ -88,9 +88,8 @@ def process_video_shard(gpu_id, video_tasks, ref_video_path):
                 
                 # Create Side-by-Side: [Before | After]
                 # Concatenate along width (axis 1)
-                combined_frame = np.concatenate((frame_np, output_np), axis=1)
 
-                writer.append_data(combined_frame)
+                writer.append_data(output_np)
 
                 if i % 10 == 0:
                     print(f"[{device}] Video {os.path.basename(input_path)}: {i}/{total_frames}")
@@ -106,8 +105,8 @@ def process_video_shard(gpu_id, video_tasks, ref_video_path):
 def main():
     # --- Configuration ---
     num_gpus = 4
-    base_input_dir = "outputs/demo/lyra_dynamic_2/static_view_indices_fixed_5_0_1_2_3_4/lyra_dynamic_demo_generated/0/raw"
-    output_dir = "outputs/difix_2"
+    base_input_dir = "outputs/demo/lyra_dynamic_3/static_view_indices_fixed_5_0_1_2_3_4/lyra_dynamic_demo_generated/0/raw"
+    output_dir = "outputs/difix_3"
     ref_video_path = "test_inference2/rgb/815e2628-544a-50ea-b746-bef4b9e9b695.mp4"
     
     os.makedirs(output_dir, exist_ok=True)

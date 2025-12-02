@@ -84,6 +84,8 @@ Add --flip_supervision if you want to also generate the motion reversed training
 
 ```bash
 accelerate launch sample.py --config configs/demo/lyra_dynamic.yaml
+
+accelerate launch --num_processes=1 sample.py --config configs/demo/lyra_dynamic.yaml
 ```
 
 #### Testing on your own videos using ViPE

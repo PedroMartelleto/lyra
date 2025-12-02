@@ -75,7 +75,7 @@ class DifixAdapter(BaseDataset):
         view_idxs: List[int],
         data_fields: List[DataField],
     ) -> dict[DataField, Any]:
-        
+               
         fields_to_load_from_orig = [f for f in data_fields if f != DataField.IMAGE_RGB]
         output_dict = {}
 

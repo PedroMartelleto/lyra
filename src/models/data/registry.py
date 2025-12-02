@@ -130,7 +130,7 @@ dataset_registry['lyra_dynamic_demo'] = {
 dataset_registry['lyra_dynamic_demo_generated'] = {
     'cls': RadymWrapper, 
     'kwargs': {
-        "root_path": "assets/demo/dynamic/diffusion_output_generated",
+        "root_path": "assets/demo2/dynamic/diffusion_output_generated",
         "is_static": False,
         "is_multi_view": True,
         "has_latents": True,
