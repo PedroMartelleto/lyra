@@ -1,17 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 from typing import Optional, Dict, List
 from tqdm import tqdm
@@ -99,7 +87,7 @@ def main_single(
     else:
         main_config = load_and_merge_configs(config.config_path)
 
-    # Get latest checkpoint if no checkpoint given (e.g., ckpt_name = 'checkpoint-15000')
+    # Get latest checkpoint
     ckpt_name = None
     if ckpt_path is None:
         if config.ckpt_path is None:
@@ -127,12 +115,28 @@ def main_single(
     if config.set_manual_time_idx:
         main_config.set_manual_time_idx = config.set_manual_time_idx
     
-    # Set view indices
-    if config.static_view_indices_fixed is not None:
-        main_config.static_view_indices_fixed = config.static_view_indices_fixed
-        outdir = os.path.join(outdir, f"static_view_indices_fixed_{'_'.join(config.static_view_indices_fixed)}")
-        main_config.static_view_indices_sampling = 'fixed'
-        main_config.num_input_multi_views = len(config.static_view_indices_fixed)
+    # -------------------------------------------------------------------------
+    # MODIFICATION 1: Force Single View (View 0)
+    # -------------------------------------------------------------------------
+    target_view_idx = '0' 
+    if config.static_view_indices_fixed is not None and len(config.static_view_indices_fixed) > 0:
+        target_view_idx = config.static_view_indices_fixed[0]
+        
+    print(f"--- FORCING SINGLE VIEW INFERENCE (View {target_view_idx}) ---")
+    main_config.static_view_indices_fixed = [target_view_idx]
+    main_config.static_view_indices_sampling = 'fixed'
+    main_config.num_input_multi_views = 1 
+
+    # -------------------------------------------------------------------------
+    # MODIFICATION 2: Disable Pruning
+    # -------------------------------------------------------------------------
+    # The config has aggressive pruning (0.8) which kills low-confidence gaussians
+    # when using only 1 view. We disable it here.
+    print("--- DISABLING GAUSSIAN PRUNING FOR DENSE OUTPUT ---")
+    main_config.gaussians_prune_ratio = 0.0
+    main_config.gaussians_random_ratio = 0.0
+    main_config.lambda_opacity = 0.0
+    # -------------------------------------------------------------------------
     
     # Subsample the output views
     if config.target_index_subsample is not None:
@@ -239,6 +243,8 @@ def main_single(
         
         # Compute plucker with float64 to match old cpu results
         if main_config.compute_plucker_cuda:
+            # We compute plucker embeddings based on the Loaded 1 View (121 frames). 
+            # We do NOT slice here to ensure shapes align with the latent VAE output which handles 121 frames internally via compression.
             batch_test['plucker_embedding'], batch_test['rays_os'], batch_test['rays_ds'] = get_plucker_embedding_and_rays(
                 batch_test['intrinsics_input'],
                 batch_test['c2ws_input'],
@@ -248,43 +254,55 @@ def main_single(
                 get_batch_index=False,
                 dtype=dtype_map[main_config.compute_plucker_dtype],
                 out_dtype=weight_dtype
-            )
+                )
         
-        # Make sure all use the same multi views within one batch
-        if 'num_input_multi_views' in batch_test:
-            assert (batch_test['num_input_multi_views'][0] == batch_test['num_input_multi_views']).all(), f"Not supporting multi batch size for variable multi-view"
-            num_input_multi_views = int(batch_test['num_input_multi_views'][0].item())
-            batch_test['num_input_multi_views'] = num_input_multi_views
+        # ---------------------------------------------------------------------
+        # MODIFICATION 3: Clean View Logic
+        # ---------------------------------------------------------------------
+        LATENT_SLICE = 16
         
-        # print(batch_test.keys())
+        # Force metadata to 1 view
+        batch_test['num_input_multi_views'] = torch.tensor(1, device=distributed_state.device)
 
         # Encode video
         if 'rgb_latents' in batch_test:
             model_input = batch_test['rgb_latents'].to(weight_dtype) 
+            # Slice Latents to 16 to ensure we only get View 0 if batch loaded more
+            if model_input.shape[1] > LATENT_SLICE:
+                model_input = model_input[:, :LATENT_SLICE]
             batch_test['images_input_embed'] = model_input
-            # print("Model input:", model_input.shape)
             video = None
         else:
             video = batch_test['images_input_vae']
             if main_config.use_rgb_decoder:
                 model_input = video
             else:
-                model_input = encode_multi_view_video(vae, video, num_input_multi_views, main_config.vae_backbone)
-                        
+                model_input = encode_multi_view_video(vae, video, 1, main_config.vae_backbone)
+            
+            # Slice Encoded Latents to 16
+            if model_input.shape[1] > LATENT_SLICE:
+                model_input = model_input[:, :LATENT_SLICE]
             batch_test['images_input_embed'] = model_input
 
         if main_config.time_embedding_vae:
+            # Encode FULL pixel time embeddings (121 frames -> 16 latents)
             batch_test = encode_latent_time_vae(batch_test, lambda x: encode_video(vae, x, main_config.vae_backbone), main_config.img_size)
+
         if main_config.plucker_embedding_vae:
-            batch_test = encode_plucker_vae(batch_test, lambda x: encode_multi_view_video(vae, x, num_input_multi_views, main_config.vae_backbone))
+            batch_test = encode_plucker_vae(batch_test, lambda x: encode_multi_view_video(vae, x, 1, main_config.vae_backbone))
         
         # NOTE: Uses GEN3C trajectories for sampling
         batch_test['cam_view'] = torch.inverse(batch_test['c2ws_input']).transpose(-2, -1)
         batch_test['intrinsics'] = batch_test['intrinsics_input']
 
         # Reconstruct latents and render from 3DGS
+        # print all key shapes in batch_test for debugging
+        for k, v in batch_test.items():
+            if isinstance(v, torch.Tensor):
+                logger.info(f"batch_test[{k}].shape: {v.shape}, dtype: {v.dtype}")
+
+        # Reconstruct latents and render from 3DGS
         with torch.no_grad():
-            batch_test['rgb_latents'] = batch_test['rgb_latents'][:, :16, ...]
             model_output = transformer(batch_test)
         
         # Get RGB and depth from 3DGS
@@ -320,7 +338,7 @@ def main_single(
         del model_output['gaussians']
 
         # Wave propagation visualization
-        pred_images_views = einops.rearrange(pred_images, 'b (v t) c h w -> v b t c h w', v=num_input_multi_views)
+        pred_images_views = einops.rearrange(pred_images, 'b (v t) c h w -> v b t c h w', v=1) # Forced v=1
         if not do_eval:
             use_gradient_color = wave_color_dict['use_gradient_color']
             if 'wave_color' in wave_color_dict:

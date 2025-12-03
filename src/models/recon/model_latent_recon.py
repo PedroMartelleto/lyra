@@ -372,6 +372,7 @@ class LatentRecon(nn.Module):
     def gaussian_pruning(self, gaussians: torch.Tensor):
         # Gaussian pruning following Long LRM
         prune_ratio = self.opt.gaussians_prune_ratio
+        print("Pruning with ratio:", prune_ratio)
         if prune_ratio > 0:
             opacity = gaussians[:, :, [3]]
             num_gaussians = gaussians.shape[1]

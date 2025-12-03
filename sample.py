@@ -273,6 +273,11 @@ def main_single(
             batch_test = encode_plucker_vae(batch_test, lambda x: encode_multi_view_video(vae, x, num_input_multi_views, main_config.vae_backbone))
         
         # Reconstruct latents and render from 3DGS
+        # print all key shapes in batch_test for debugging
+        for k, v in batch_test.items():
+            if isinstance(v, torch.Tensor):
+                logger.info(f"batch_test[{k}].shape: {v.shape}, dtype: {v.dtype}")
+
         with torch.no_grad():
             model_output = transformer(batch_test)
         
