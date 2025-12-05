@@ -15,41 +15,48 @@ class PairedDataset(torch.utils.data.Dataset):
         self.tokenizer = tokenizer
 
     def __len__(self):
-
         return len(self.img_ids)
 
     def __getitem__(self, idx):
-
         img_id = self.img_ids[idx]
         
-        input_img = self.data[img_id]["image"]
-        output_img = self.data[img_id]["target_image"]
-        ref_img = self.data[img_id]["ref_image"] if "ref_image" in self.data[img_id] else None
+        input_img_path = self.data[img_id]["image"]
+        output_img_path = self.data[img_id]["target_image"]
+        ref_img_path = self.data[img_id].get("ref_image", None)
         caption = self.data[img_id]["prompt"]
         
         try:
-            input_img = Image.open(input_img)
-            output_img = Image.open(output_img)
-        except:
-            print("Error loading image:", input_img, output_img)
-            return self.__getitem__(idx + 1)
+            input_img = Image.open(input_img_path).convert("RGB")
+            output_img = Image.open(output_img_path).convert("RGB")
+        except Exception as e:
+            print(f"Error loading image: {input_img_path} or {output_img_path}. Error: {e}")
+            # Return the next index (handle edge case where idx is last element)
+            return self.__getitem__((idx + 1) % len(self))
 
-        img_t = F.to_tensor(img_t)
-        img_t = F.resize(img_t, self.image_size)
+        # Preprocess Input Image
+        img_t = F.to_tensor(input_img)
+        img_t = F.resize(img_t, self.image_size, interpolation=F.InterpolationMode.BILINEAR, antialias=True)
         img_t = F.normalize(img_t, mean=[0.5], std=[0.5])
 
-        output_t = F.to_tensor(output_t)
-        output_t = F.resize(output_t, self.image_size)
+        # Preprocess Target Image
+        output_t = F.to_tensor(output_img)
+        output_t = F.resize(output_t, self.image_size, interpolation=F.InterpolationMode.BILINEAR, antialias=True)
         output_t = F.normalize(output_t, mean=[0.5], std=[0.5])
 
-        if ref_img is not None:
-            ref_img = Image.open(ref_img)
-            ref_t = F.to_tensor(ref_t)
-            ref_t = F.resize(ref_t, self.image_size)
-            ref_t = F.normalize(ref_t, mean=[0.5], std=[0.5])
-        
-            img_t = torch.stack([img_t, ref_t], dim=0)
-            output_t = torch.stack([output_t, ref_t], dim=0)            
+        # Handle Reference Image (if exists)
+        if ref_img_path is not None:
+            try:
+                ref_img = Image.open(ref_img_path).convert("RGB")
+                ref_t = F.to_tensor(ref_img)
+                ref_t = F.resize(ref_t, self.image_size, interpolation=F.InterpolationMode.BILINEAR, antialias=True)
+                ref_t = F.normalize(ref_t, mean=[0.5], std=[0.5])
+            
+                # Stack input and reference
+                img_t = torch.stack([img_t, ref_t], dim=0)
+                output_t = torch.stack([output_t, ref_t], dim=0)
+            except Exception as e:
+                print(f"Error loading ref image: {ref_img_path}. Error: {e}")
+                return self.__getitem__((idx + 1) % len(self))
         else:
             img_t = img_t.unsqueeze(0)
             output_t = output_t.unsqueeze(0)

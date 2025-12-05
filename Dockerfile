@@ -203,8 +203,53 @@ RUN pip install --no-cache-dir 'opencv-python==4.11.0.86' 'numpy>=1.22,<2.0'
 COPY vipe /workspace/vipe
 RUN cd /workspace/vipe && pip install --no-build-isolation --no-deps -e .
 
+# ==============================================================================
+# Stage: Instant4D Build
+# ==============================================================================
+FROM vipe-deps AS instant4d-builds
+
+WORKDIR /workspace
+
+# 1. Install pure Python dependencies
+# We exclude opencv-python-headless (already have opencv) and torch (use system)
+# We exclude plyfile, tqdm, kornia, omegaconf, timm, ninja, huggingface-hub, websockets (already installed in base/vipe)
+RUN pip install --no-cache-dir torchmetrics==1.8.2 imagesize==1.4.1 point-cloud-utils==0.34.0
+
+# We use --no-deps to prevent it from trying to download a conflicting torch wheel
+ENV FORCE_CUDA=1
+RUN pip install --no-cache-dir --no-deps torch-scatter
+
+# 5. Compile Mega-SAM (The patched version)
+RUN cd /workspace/Instant4D/SLAM/mega-sam/base && \
+    python3 setup.py install
+
+# 6. Compile Submodules (Gaussian Splatting dependencies)
+# Install fused-ssim (local submodule preferred by Instant4D over the rahul-goel global one, 
+# though likely similar, safe to install over)
+RUN cd /workspace/Instant4D/submodule/fused-ssim && \
+    pip install .
+
+RUN cd /workspace/Instant4D/submodule/simple-knn && \
+    python3 setup.py install
+
+RUN cd /workspace/Instant4D/submodule/pointops2 && \
+    python3 setup.py install
+
+# 7. Pre-download Checkpoints (Optional but recommended to bake into image)
+# Create directories
+RUN mkdir -p /workspace/Instant4D/SLAM/mega-sam/Depth-Anything/checkpoints && \
+    mkdir -p /workspace/Instant4D/SLAM/mega-sam/cvd_opt
+
+# Download DepthAnything (approx 1GB+) - verify URL availability or mount at runtime if preferred
+RUN wget -O /workspace/Instant4D/SLAM/mega-sam/Depth-Anything/checkpoints/depth_anything_vitl14.pth \
+    https://huggingface.co/spaces/LiheYoung/Depth-Anything/resolve/main/checkpoints/depth_anything_vitl14.pth || echo "Download failed, please mount manually"
+
+# Download RAFT checkpoint
+RUN wget -O /workspace/Instant4D/SLAM/mega-sam/cvd_opt/raft-things.pth \
+    https://huggingface.co/AvivSham/raft/resolve/main/raft-things.pth || echo "Download failed, please mount manually"
+
 # Final stage: Sanity checks and environment setup
-FROM vipe-deps AS final
+FROM instant4d-builds AS final
 
 RUN pip uninstall -y causal-conv1d mamba-ssm mamba-ssm[causal-conv1d] || true
 RUN pip install mamba-ssm[causal-conv1d]==2.2.6.post3 --no-build-isolation --no-deps

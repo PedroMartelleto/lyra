@@ -1,5 +1,14 @@
 # Lyra: Generative 3D Scene Reconstruction via Video Diffusion Model Self-Distillation
 
+## Running in Docker (CNB)
+
+sudo docker run -it --gpus all --ipc=host --ulimit memlock=-1 --ulimit stack=67108864 \
+    -v $(pwd):/workspace \
+    -v $(pwd)/../SpatialVid:/SpatialVid \
+    lyra /bin/bash
+
+-----
+
 <p align="center">
   <img src="https://github.com/user-attachments/assets/12d44362-8b7f-4952-9488-0e45cf759b57" alt="teaser"/>
 </p>

@@ -1,0 +1,9 @@
+[submodule "SLAM/mega-sam"]
+	path = SLAM/mega-sam
+	url = https://github.com/mega-sam/mega-sam/
+[submodule "submodule/fused-ssim"]
+	path = submodule/fused-ssim
+	url = https://github.com/rahul-goel/fused-ssim
+[submodule "submodule/fussed-ssim"]
+	path = submodule/fussed-ssim
+	url = https://github.com/rahul-goel/fused-ssim/
