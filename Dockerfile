@@ -121,10 +121,6 @@ RUN unzip /tmp/Video_Codec_SDK_13.0.19.zip -d /tmp/ && \
     rm /tmp/Video_Codec_SDK_13.0.19.zip
 
 RUN mkdir -p /usr/local/cuda-12.8/lib64
-
-# Create symlink for libnvcuvid.so in CUDA lib64
-RUN mkdir -p /usr/local/cuda-12.8/lib64
-
 RUN ARCH=$(uname -m) && \
     ln -s /usr/local/nvidia-video-codec-sdk/Lib/linux/stubs/$ARCH/libnvcuvid.so /usr/local/cuda-12.8/lib64/libnvcuvid.so && \
     ln -s /usr/local/nvidia-video-codec-sdk/Lib/linux/stubs/$ARCH/libnvidia-encode.so /usr/local/cuda-12.8/lib64/libnvidia-encode.so
@@ -203,10 +199,26 @@ RUN pip install --no-cache-dir 'opencv-python==4.11.0.86' 'numpy>=1.22,<2.0'
 COPY vipe /workspace/vipe
 RUN cd /workspace/vipe && pip install --no-build-isolation --no-deps -e .
 
-# ==============================================================================
-# Stage: Instant4D Build
-# ==============================================================================
-FROM vipe-deps AS instant4d-builds
+# Final stage: Sanity checks and environment setup
+FROM vipe-deps AS final
+
+RUN pip uninstall -y causal-conv1d mamba-ssm mamba-ssm[causal-conv1d] || true
+RUN pip install mamba-ssm[causal-conv1d]==2.2.6.post3 --no-build-isolation --no-deps
+RUN pip install causal-conv1d==1.5.3.post1 --no-build-isolation
+
+FROM final AS final-difix
+
+RUN pip install einops lpips peft==0.9.0 diffusers==0.25.1 huggingface-hub==0.25.1 transformers==4.38.0 --no-build-isolation
+
+RUN python -c "import torch; print('PyTorch version:', torch.__version__)"
+RUN python -c "import torchvision; print('torchvision version:', torchvision.__version__)"
+RUN python -c "import numpy; print('NumPy version:', numpy.__version__)"
+
+# Set environment variables for optimal performance
+ENV PYTHONUNBUFFERED=1
+ENV TORCH_CUDA_ARCH_LIST="7.0 7.5 8.0 8.6 8.9 9.0+PTX"
+
+FROM final-difix AS final-instant4d
 
 WORKDIR /workspace
 
@@ -247,24 +259,6 @@ RUN wget -O /workspace/Instant4D/SLAM/mega-sam/Depth-Anything/checkpoints/depth_
 # Download RAFT checkpoint
 RUN wget -O /workspace/Instant4D/SLAM/mega-sam/cvd_opt/raft-things.pth \
     https://huggingface.co/AvivSham/raft/resolve/main/raft-things.pth || echo "Download failed, please mount manually"
-
-# Final stage: Sanity checks and environment setup
-FROM instant4d-builds AS final
-
-RUN pip uninstall -y causal-conv1d mamba-ssm mamba-ssm[causal-conv1d] || true
-RUN pip install mamba-ssm[causal-conv1d]==2.2.6.post3 --no-build-isolation --no-deps
-RUN pip install causal-conv1d==1.5.3.post1 --no-build-isolation
-RUN pip install torchmetrics==1.8.2 lpips==0.1.4 --no-build-isolation
-
-# Sanity checks
-RUN python -c "import torch; print('PyTorch version:', torch.__version__)"
-RUN python -c "import torchvision; print('torchvision version:', torchvision.__version__)"
-RUN python -c "import numpy; print('NumPy version:', numpy.__version__)"
-# RUN pip show triton
-
-# Set environment variables for optimal performance
-ENV PYTHONUNBUFFERED=1
-ENV TORCH_CUDA_ARCH_LIST="7.0 7.5 8.0 8.6 8.9 9.0+PTX"
 
 # Default command
 CMD ["/bin/bash"]
