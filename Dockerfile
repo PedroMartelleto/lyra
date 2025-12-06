@@ -222,24 +222,23 @@ FROM final-difix AS final-instant4d
 
 WORKDIR /workspace
 
-# 1. Install pure Python dependencies
-# We exclude opencv-python-headless (already have opencv) and torch (use system)
-# We exclude plyfile, tqdm, kornia, omegaconf, timm, ninja, huggingface-hub, websockets (already installed in base/vipe)
-RUN pip install --no-cache-dir torchmetrics==1.8.2 imagesize==1.4.1 point-cloud-utils==0.34.0
+RUN git clone --single-branch --branch=v0.34 https://github.com/fwilliams/point-cloud-utils.git /workspace/point-cloud-utils
+RUN cd /workspace/point-cloud-utils && pip install --no-build-isolation --no-deps -e .
 
-# We use --no-deps to prevent it from trying to download a conflicting torch wheel
+RUN pip install --no-cache-dir torchmetrics==1.8.2 imagesize==1.4.1
+
 ENV FORCE_CUDA=1
 RUN pip install --no-cache-dir --no-deps torch-scatter
 
-# 5. Compile Mega-SAM (The patched version)
+FROM final-instant4d AS final-megasam
+
+COPY Instant4D /workspace/Instant4D
+
 RUN cd /workspace/Instant4D/SLAM/mega-sam/base && \
     python3 setup.py install
 
-# 6. Compile Submodules (Gaussian Splatting dependencies)
-# Install fused-ssim (local submodule preferred by Instant4D over the rahul-goel global one, 
-# though likely similar, safe to install over)
-RUN cd /workspace/Instant4D/submodule/fused-ssim && \
-    pip install .
+# RUN cd /workspace/Instant4D/submodule/fused-ssim && \
+    # pip install .
 
 RUN cd /workspace/Instant4D/submodule/simple-knn && \
     python3 setup.py install
@@ -247,18 +246,30 @@ RUN cd /workspace/Instant4D/submodule/simple-knn && \
 RUN cd /workspace/Instant4D/submodule/pointops2 && \
     python3 setup.py install
 
-# 7. Pre-download Checkpoints (Optional but recommended to bake into image)
-# Create directories
 RUN mkdir -p /workspace/Instant4D/SLAM/mega-sam/Depth-Anything/checkpoints && \
     mkdir -p /workspace/Instant4D/SLAM/mega-sam/cvd_opt
 
-# Download DepthAnything (approx 1GB+) - verify URL availability or mount at runtime if preferred
 RUN wget -O /workspace/Instant4D/SLAM/mega-sam/Depth-Anything/checkpoints/depth_anything_vitl14.pth \
     https://huggingface.co/spaces/LiheYoung/Depth-Anything/resolve/main/checkpoints/depth_anything_vitl14.pth || echo "Download failed, please mount manually"
 
-# Download RAFT checkpoint
 RUN wget -O /workspace/Instant4D/SLAM/mega-sam/cvd_opt/raft-things.pth \
     https://huggingface.co/AvivSham/raft/resolve/main/raft-things.pth || echo "Download failed, please mount manually"
+
+FROM final-megasam AS final-depthanything3
+
+RUN pip install --no-cache-dir pre-commit==4.5.0 \
+    trimesh==4.10.0 \
+    fastapi==0.123.9 \
+    uvicorn==0.38.0 \
+    typer==0.20.0 \
+    evo==1.34.0 \
+    e3nn==0.5.8 \
+    moviepy==2.2.1 \
+    open3d==0.19.0 \
+    pillow-heif==1.1.1
+
+RUN git clone https://github.com/ByteDance-Seed/Depth-Anything-3.git /workspace/Depth-Anything-3
+RUN cd /workspace/Depth-Anything-3 && pip install --no-build-isolation --no-deps -e [all]
 
 # Default command
 CMD ["/bin/bash"]
