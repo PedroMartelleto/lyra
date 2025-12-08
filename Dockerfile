@@ -252,10 +252,11 @@ RUN mkdir -p /workspace/Instant4D/SLAM/mega-sam/Depth-Anything/checkpoints && \
 RUN wget -O /workspace/Instant4D/SLAM/mega-sam/Depth-Anything/checkpoints/depth_anything_vitl14.pth \
     https://huggingface.co/spaces/LiheYoung/Depth-Anything/resolve/main/checkpoints/depth_anything_vitl14.pth || echo "Download failed, please mount manually"
 
-RUN wget -O /workspace/Instant4D/SLAM/mega-sam/cvd_opt/raft-things.pth \
-    https://huggingface.co/AvivSham/raft/resolve/main/raft-things.pth || echo "Download failed, please mount manually"
+FROM final-megasam AS final-xformers
 
-FROM final-megasam AS final-depthanything3
+RUN MAX_JOBS=4 pip install -v -U git+https://github.com/facebookresearch/xformers.git@v0.0.29.post3#egg=xformers --no-deps
+
+FROM final-xformers AS final-depthanything3
 
 RUN pip install --no-cache-dir pre-commit==4.5.0 \
     trimesh==4.10.0 \
@@ -264,12 +265,15 @@ RUN pip install --no-cache-dir pre-commit==4.5.0 \
     typer==0.20.0 \
     evo==1.34.0 \
     e3nn==0.5.8 \
-    moviepy==2.2.1 \
-    open3d==0.19.0 \
-    pillow-heif==1.1.1
+    moviepy==1.0.3 \
+    pillow-heif==1.1.1 \
+    hatchling>=1.25 \
+    hatch-vcs>=0.4 \
+    editables \
+    addict
 
-RUN git clone https://github.com/ByteDance-Seed/Depth-Anything-3.git /workspace/Depth-Anything-3
-RUN cd /workspace/Depth-Anything-3 && pip install --no-build-isolation --no-deps -e [all]
+COPY Depth-Anything-3 /workspace/Depth-Anything-3
+RUN cd /workspace/Depth-Anything-3 && pip install --no-build-isolation --no-deps -e ".[all]"
 
 # Default command
 CMD ["/bin/bash"]
