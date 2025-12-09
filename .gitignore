@@ -8,3 +8,4 @@ sanity_checks/
 *.pyc
 *.pth
 output_results/
+*.mp4
