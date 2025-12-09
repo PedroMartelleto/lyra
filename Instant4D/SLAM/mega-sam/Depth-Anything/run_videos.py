@@ -61,6 +61,11 @@ if __name__ == '__main__':
   total_params = sum(param.numel() for param in depth_anything.parameters())
   print('Total parameters: {:.2f}M'.format(total_params / 1e6))
 
+  # print full path of the model we are trying to load
+  print(f'Loading model from: {args.load_from}')
+  # current dir?
+  print(f'Current directory: {os.getcwd()}')
+
   depth_anything.load_state_dict(
       torch.load(args.load_from, map_location='cpu'), strict=True
   )

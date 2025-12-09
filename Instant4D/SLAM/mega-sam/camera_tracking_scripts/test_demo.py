@@ -23,9 +23,14 @@
 # pylint: disable=undefined-variable
 # pylint: disable=undefined-loop-variable
 
+import os
 import sys
 
 sys.path.append("base/droid_slam")
+sys.path.append("/iopsstor/scratch/cscs/pmartell/lyra/Instant4D/SLAM/mega-sam/base/droid_slam")
+
+# make cwd go 3 paths up the current cwd
+os.chdir("../../../")
 
 from tqdm import tqdm
 import numpy as np
@@ -202,6 +207,8 @@ if __name__ == "__main__":
   image_list = sorted(glob.glob(os.path.join("%s" % (args.datapath), "*.jpg")))
   image_list += sorted(glob.glob(os.path.join("%s" % (args.datapath), "*.png")))
 
+  print(f"mono/metric depth paths {args.mono_depth_path}/{scene_name}, {args.metric_depth_path}/{scene_name}")
+
   # NOTE Mono is inverse depth, but metric-depth is depth!
   mono_disp_paths = sorted(
       glob.glob(
@@ -219,6 +226,9 @@ if __name__ == "__main__":
   shifts = []
   mono_disp_list = []
   fovs = []
+
+  print(f"paths: {mono_disp_paths}, {metric_depth_paths}")
+
   for t, (mono_disp_file, metric_depth_file) in enumerate(
       zip(mono_disp_paths, metric_depth_paths)
   ):
