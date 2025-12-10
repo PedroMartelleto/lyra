@@ -1,5 +1,9 @@
-- Fix depth
+- Output ply file for visualization
+- Run DiFix on DA3
+- Try out full pipeline with DA3 in static videos
+- 3DGS model with "query points"
 
+- Alternative: Instant4D + GSWM code
 
 
 cd lyra
@@ -36,7 +40,7 @@ Experiment 2: Overfitting a Single Scene (The Litmus Test)
 1.  Adapt your `train_generative.py` script.
 2.  Modify the `Provider` or `DataLoader` to only use a single video file from SpatialVID.
 3.  In the training loop, keep track of the loss.
-4.  Run the training for a few hundred steps (e.g., 500-1000).
+4.  Run the training for a few hundred steps (e.g., 500-1000).3D
 5.  Periodically (e.g., every 100 steps), perform a full generation/inference loop using a *fixed* initial noise tensor and the conditioning frame from your single scene. Render the generated 3DGS from all camera views and save the video.
 
 **Expected Outcome:**

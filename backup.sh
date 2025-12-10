@@ -1,0 +1,1 @@
+rsync -ahv --progress . ~/lyra --exclude '.git/' --exclude '__pycache__/' --exclude '*.pyc' --exclude 'checkpoints/' --exclude 'test_inference*' --exclude 'output*' --exclude 'assets/'
