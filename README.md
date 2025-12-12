@@ -56,11 +56,11 @@ huggingface-cli download nvidia/Lyra-Testing-Example --repo-type dataset --local
 CUDA_HOME=$CONDA_PREFIX PYTHONPATH=$(pwd) torchrun --nproc_per_node=1 cosmos_predict1/diffusion/inference/gen3c_single_image_sdg.py \
     --checkpoint_dir checkpoints \
     --num_gpus 1 \
-    --input_image_path assets/demo/static/diffusion_input/images/00172.png \
+    --input_image_path assets/Garden.jpg \
     --video_save_folder assets/demo/static/diffusion_output_generated \
     --foreground_masking \
     --multi_trajectory \
-    --total_movement_distance_factor 1.0
+    --total_movement_distance_factor 7.0
 ```
 
 Increase total_movement_distance_factor to 2.0 for more camera motion, though it can create more artifacts in object-centric scenes. If you want to skip the diffusion part, we have pre-generated the latents in assets/demo/static/diffusion_output. By default we use pre-generated latents, change dataset_name in configs/demo/lyra_static.yaml from lyra_static_demo to lyra_static_demo_generated to use your own generated latents.
@@ -74,6 +74,16 @@ accelerate launch sample.py --config configs/demo/lyra_static.yaml
 ### Example 2: Single Video to Dynamic 3D Gaussians Generation
 
 1) Generate multi-view video latents from the input video and ViPE estimated depth using scripts/bash/dynamic_sdg.sh.
+
+CUDA_HOME=$CONDA_PREFIX PYTHONPATH=$(pwd) torchrun --nproc_per_node=1 cosmos_predict1/diffusion/inference/gen3c_dynamic_sdg.py \
+    --checkpoint_dir checkpoints \
+    --vipe_path assets/demo/dynamic/diffusion_input/rgb/6a71ee0422ff4222884f1b2a3cba6820.mp4 \
+    --video_save_folder assets/demo/dynamic/diffusion_output_generated \
+    --disable_prompt_upsampler \
+    --num_gpus 1 \
+    --foreground_masking \
+    --multi_trajectory \
+    --movement_distance 1.5
 
 ```bash
 CUDA_HOME=$CONDA_PREFIX PYTHONPATH=$(pwd) torchrun --nproc_per_node=1 cosmos_predict1/diffusion/inference/gen3c_dynamic_sdg.py \

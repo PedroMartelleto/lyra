@@ -9,3 +9,6 @@ sanity_checks/
 *.pth
 output_results/
 *.mp4
+output*
+*.err
+*.out

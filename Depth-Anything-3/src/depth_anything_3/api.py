@@ -127,7 +127,13 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
         with torch.no_grad():
             with torch.autocast(device_type=image.device.type, dtype=autocast_dtype):
                 return self.model(
-                    image, extrinsics, intrinsics, export_feat_layers, infer_gs, use_ray_pose, ref_view_strategy
+                    image,
+                    extrinsics,
+                    intrinsics,
+                    export_feat_layers,
+                    infer_gs,
+                    use_ray_pose,
+                    ref_view_strategy,
                 )
 
     def inference(
@@ -139,9 +145,9 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
         infer_gs: bool = False,
         use_ray_pose: bool = False,
         ref_view_strategy: str = "saddle_balanced",
-        render_exts: np.ndarray | None = None,
-        render_ixts: np.ndarray | None = None,
-        render_hw: tuple[int, int] | None = None,
+        render_extrinsics: np.ndarray | None = None,
+        render_intrinsics: np.ndarray | None = None,
+        render_resolution: tuple[int, int] | None = None,
         process_res: int = 504,
         process_res_method: str = "upper_bound_resize",
         export_dir: str | None = None,
@@ -161,17 +167,18 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
 
         Args:
             image: List of input images (numpy arrays, PIL Images, or file paths)
-            extrinsics: Camera extrinsics (N, 4, 4)
-            intrinsics: Camera intrinsics (N, 3, 3)
+            extrinsics: Camera extrinsics (N, 4, 4) fed into the model for conditioning/alignment.
+            intrinsics: Camera intrinsics (N, 3, 3) fed into the model.
             align_to_input_ext_scale: whether to align the input pose scale to the prediction
             infer_gs: Enable the 3D Gaussian branch (needed for `gs_ply`/`gs_video` exports)
             use_ray_pose: Use ray-based pose estimation instead of camera decoder (default: False)
             ref_view_strategy: Strategy for selecting reference view from multiple views.
                 Options: "first", "middle", "saddle_balanced", "saddle_sim_range".
-                Default: "saddle_balanced". For single view input (S ≤ 2), no reordering is performed.
-            render_exts: Optional render extrinsics for Gaussian video export
-            render_ixts: Optional render intrinsics for Gaussian video export
-            render_hw: Optional render resolution for Gaussian video export
+                Default: "saddle_balanced". For single view input (S <= 2), no reordering is performed.
+            render_extrinsics: Optional custom camera trajectories used ONLY for rendering the scene (e.g. gs_video).
+                               These are NOT fed into the depth estimation model.
+            render_intrinsics: Optional custom intrinsics for the rendering camera.
+            render_resolution: Optional custom resolution (H, W) for the rendering.
             process_res: Processing resolution
             process_res_method: Resize method for processing
             export_dir: Directory to export results
@@ -207,7 +214,13 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
         export_feat_layers = list(export_feat_layers) if export_feat_layers is not None else []
 
         raw_output = self._run_model_forward(
-            imgs, ex_t_norm, in_t, export_feat_layers, infer_gs, use_ray_pose, ref_view_strategy
+            imgs,
+            ex_t_norm,
+            in_t,
+            export_feat_layers,
+            infer_gs,
+            use_ray_pose,
+            ref_view_strategy,
         )
 
         # Convert raw output to prediction
@@ -221,6 +234,11 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
         # Add processed images for visualization
         prediction = self._add_processed_images(prediction, imgs_cpu)
 
+        if render_extrinsics is not None:
+            render_extrinsics = torch.from_numpy(render_extrinsics).float().to(self.device)
+        if render_intrinsics is not None:
+            render_intrinsics = torch.from_numpy(render_intrinsics).float().to(self.device)
+
         # Export if requested
         if export_dir is not None:
 
@@ -230,11 +248,13 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
                 if "gs_video" in export_format:
                     if "gs_video" not in export_kwargs:
                         export_kwargs["gs_video"] = {}
+                    
+                    # Pass the render-specific parameters ONLY to the export function
                     export_kwargs["gs_video"].update(
                         {
-                            "extrinsics": render_exts,
-                            "intrinsics": render_ixts,
-                            "out_image_hw": render_hw,
+                            "extrinsics": render_extrinsics,
+                            "intrinsics": render_intrinsics,
+                            "out_image_hw": render_resolution,
                         }
                     )
             # Add GLB export parameters
@@ -381,7 +401,9 @@ class DepthAnything3(nn.Module, PyTorchModelHubMixin):
             torch.cuda.synchronize(device)
         start_time = time.time()
         feat_layers = list(export_feat_layers) if export_feat_layers is not None else None
-        output = self.forward(imgs, ex_t, in_t, feat_layers, infer_gs, use_ray_pose, ref_view_strategy)
+        output = self.forward(
+            imgs, ex_t, in_t, feat_layers, infer_gs, use_ray_pose, ref_view_strategy
+        )
         if need_sync:
             torch.cuda.synchronize(device)
         end_time = time.time()

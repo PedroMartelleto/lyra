@@ -1,14 +1,9 @@
 import sys
+import os
 
-local_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "Depth-Anything-3", "src"))
-
-# Insert at index 0 to ensure it takes precedence over pip installed packages
-if local_path not in sys.path:
-    sys.path.insert(0, local_path)
-
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "Depth-Anything-3", "src")))
 
 import torch
-import os
 import numpy as np
 from depth_anything_3.api import DepthAnything3
 from decord import VideoReader, cpu
@@ -130,7 +125,7 @@ def main():
     
     final_images = images_list[:min_len]
     final_extrinsics = extrinsics_lyra[:min_len]
-    final_intrinsics = intrinsics_lyra[:min_len] # Also align intrinsics
+    # final_intrinsics = intrinsics_lyra[:min_len] # Also align intrinsics
     
     print(f"Aligning frames: Video({n_frames_vid}) vs Trajectory({n_frames_traj}) -> Using {min_len} frames.")
 
@@ -142,16 +137,24 @@ def main():
     model = DepthAnything3.from_pretrained("depth-anything/DA3NESTED-GIANT-LARGE")
     model = model.to(device=device)
 
+    export_kwargs = {
+        "gs_video": {
+            "chunk_size": 1,
+            "video_quality": "high"
+        }
+    }
+
     print("Running inference with Lyra trajectory and intrinsics...")
     prediction = model.inference(
         final_images,
-        extrinsics=final_extrinsics, 
-        intrinsics=final_intrinsics,
+        render_extrinsics=final_extrinsics[None, ...], 
+        # render_intrinsics=final_intrinsics[None, ...],
         infer_gs=True,
-        export_dir="output_render_da3",
+        export_dir="output_render_da3_2",
         process_res=1024,
-        num_max_points=10_000_000,
-        export_format="gs_video",
+        num_max_points=800_000,
+        export_format="gs_video-gs_ply",
+        export_kwargs=export_kwargs
         # trj_mode="original",
     )
 

@@ -1,3 +1,16 @@
+accelerate launch sample.py --config configs/demo/lyra_static.yaml
+
+- Compare lyra & DA3 3DGS before making 3D cache infinite
+
+- make 3D cache "infinite" and see if we can run generation (keep track of GPU memory and cache size over time, append to file or console)
+- compare results between infinite cache and limited cache
+- fit gaussians, initially naively with DA3
+
+- potential issue is that GEN3C inference is very slow
+    - one direction is looking up how to speed up these video diffusion models
+
+------------------------
+
 - Output ply file for visualization
 - Run DiFix on DA3
 - Try out full pipeline with DA3 in static videos
