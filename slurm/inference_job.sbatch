@@ -9,10 +9,15 @@
 export CUDA_HOME=$CONDA_PREFIX
 export PYTHONPATH=$(pwd)
 
-srun --environment=lyra bash -c "
+srun --environment=instant4d bash -c "
 cd /iopsstor/scratch/cscs/pmartell/lyra/
-accelerate launch sample.py --config configs/demo/lyra_static.yaml
+python3 da3_inference.py
 "
+
+# srun --environment=lyra bash -c "
+# cd /iopsstor/scratch/cscs/pmartell/lyra/
+# accelerate launch sample.py --config configs/demo/lyra_static.yaml
+# "
 
 # srun --environment=lyra bash -c "
 # cd /iopsstor/scratch/cscs/pmartell/lyra/
@@ -25,3 +30,15 @@ accelerate launch sample.py --config configs/demo/lyra_static.yaml
 #     --multi_trajectory \
 #     --total_movement_distance_factor 9.0
 # "
+
+srun --environment=lyra bash -c "
+cd /iopsstor/scratch/cscs/pmartell/lyra/
+torchrun --nproc_per_node=4 cosmos_predict1/diffusion/inference/big_cache_gen3c_single_image.py \
+    --checkpoint_dir checkpoints \
+    --num_gpus 4 \
+    --input_image_path assets/Garden.jpg \
+    --video_save_folder assets/demo/static/4gpu_speed5_more_trajs \
+    --foreground_masking \
+    --multi_trajectory \
+    --total_movement_distance_factor 5.0
+"
