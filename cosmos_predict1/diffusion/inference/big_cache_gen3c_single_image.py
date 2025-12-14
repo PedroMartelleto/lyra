@@ -134,6 +134,12 @@ def create_parser() -> argparse.ArgumentParser:
         default=1.0,
         help="Multiply multi trajectory setup with movement distance factor (larger means more movement but potentially more artifacts)",
     )
+    parser.add_argument(
+        "--cache_update_stride",
+        type=int,
+        default=3,
+        help="Update the 3D cache every N frames. Higher = faster, less precise geometry.",
+    )
     return parser
 
 def parse_arguments() -> argparse.Namespace:
@@ -168,11 +174,16 @@ def print_cache_stats(cache, tag=""):
         num_points = pts.numel() // 3 # Divide by coordinate dim
         
         # Extract buffer size (N dimension)
-        # Shape usually: [B, 1, N, 1, H, W, 3] or similar depending on Permutations
-        # Cache3D_Base reshapes to B, F, N, V, H, W, 3
         buffer_size = pts.shape[2] if len(pts.shape) > 2 else 1
+
+        # Check GPU memory if available
+        gpu_mem_str = ""
+        if torch.cuda.is_available():
+            mem_alloc = torch.cuda.memory_allocated() / (1024 ** 3)
+            mem_reserved = torch.cuda.memory_reserved() / (1024 ** 3)
+            gpu_mem_str = f" | VRAM Alloc: {mem_alloc:.2f} GB | VRAM Res: {mem_reserved:.2f} GB"
         
-        log.info(f"[{tag}] Cache Stats | Buffer(N): {buffer_size} frames | Total Points: {num_points:,} | Approx Size: {size_gb:.2f} GB")
+        log.info(f"[{tag}] Cache Stats | Buffer(N): {buffer_size} frames | Total Points: {num_points:,} | Cache Size: {size_gb:.2f} GB{gpu_mem_str}")
     except Exception as e:
         log.warning(f"[{tag}] Failed to calculate cache stats: {e}")
 
@@ -463,6 +474,9 @@ def run_single_generation(
     batch_size = 5
     T_total = video.shape[0]
     
+    # NEW: Strided cache update logic
+    cache_update_stride = args.cache_update_stride
+
     for i in range(0, T_total, batch_size):
         # Prepare batch
         batch_video = video[i : min(i + batch_size, T_total)] # (B, H, W, C) numpy
@@ -473,23 +487,27 @@ def run_single_generation(
         
         # Predict depth for batch
         for j in range(batch_tensor_01.shape[0]):
-            img_tensor = batch_tensor_01[j] # (C, H, W)
-            pred_depth, pred_mask = _predict_moge_depth_from_tensor(img_tensor, moge_model) # (1, 1, H, W)
+            global_frame_idx = i + j
             
-            # Update cache
-            cache.update_cache(
-                new_image=(img_tensor.unsqueeze(0) * 2 - 1), # (1, C, H, W), [-1, 1]
-                new_depth=pred_depth,
-                new_w2c=batch_w2cs[j].unsqueeze(0),
-                new_intrinsics=batch_intrinsics[j].unsqueeze(0),
-                new_mask=pred_mask,
-                depth_alignment=True, # Align new depth to existing cache!
-                alignment_method="non_rigid"
-            )
+            # STRIDE CHECK: Only update cache every N frames, but always update the very first frame
+            if global_frame_idx == 0 or (global_frame_idx % cache_update_stride == 0):
+                img_tensor = batch_tensor_01[j] # (C, H, W)
+                pred_depth, pred_mask = _predict_moge_depth_from_tensor(img_tensor, moge_model) # (1, 1, H, W)
+                
+                # Update cache
+                cache.update_cache(
+                    new_image=(img_tensor.unsqueeze(0) * 2 - 1), # (1, C, H, W), [-1, 1]
+                    new_depth=pred_depth,
+                    new_w2c=batch_w2cs[j].unsqueeze(0),
+                    new_intrinsics=batch_intrinsics[j].unsqueeze(0),
+                    new_mask=pred_mask,
+                    depth_alignment=True, # Align new depth to existing cache!
+                    alignment_method="non_rigid"
+                )
             
             # Print stats
             if j == batch_tensor_01.shape[0] - 1: # Print once per batch
-                print_cache_stats(cache, tag=f"Traj {args.trajectory} Update {i+j}/{T_total}")
+                print_cache_stats(cache, tag=f"Traj {args.trajectory} Update {global_frame_idx}/{T_total}")
 
     # 5. Save outputs
     if save_outputs:
@@ -658,6 +676,10 @@ def demo(args):
         num_video_frames=121,
         seed=args.seed,
     )
+    
+    # SPEEDUP: Torch compile
+    log.info("Compiling model with torch.compile...")
+    pipeline.model.net = torch.compile(pipeline.model.net, mode="reduce-overhead", fullgraph=False)
     
     if args.num_gpus > 1:
         pipeline.model.net.enable_context_parallel(process_group)
