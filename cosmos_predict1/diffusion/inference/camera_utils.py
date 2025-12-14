@@ -33,9 +33,10 @@ def look_at_matrix(camera_pos, target, invert_pos=True):
     forward = forward / torch.norm(forward)
 
     up = torch.tensor([0.0, 1.0, 0.0], device=camera_pos.device)  # assuming Y-up coordinate system
-    right = torch.cross(up, forward)
+    
+    right = torch.cross(up, forward, dim=-1)
     right = right / torch.norm(right)
-    up = torch.cross(forward, right)
+    up = torch.cross(forward, right, dim=-1)
 
     look_at = torch.eye(4, device=camera_pos.device)
     look_at[0, :3] = right

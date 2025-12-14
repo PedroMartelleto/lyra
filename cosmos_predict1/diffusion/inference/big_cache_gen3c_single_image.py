@@ -397,8 +397,10 @@ def run_single_generation(
     )
     
     all_rendered_warps = []
+    all_rendered_masks = []
     if args.save_buffer:
         all_rendered_warps.append(rendered_warp_images.clone().cpu())
+        all_rendered_masks.append(rendered_warp_masks.clone().cpu())
         
     # 2. Generate video
     generated_output = pipeline.generate(
@@ -438,6 +440,7 @@ def run_single_generation(
         
         if args.save_buffer:
             all_rendered_warps.append(rendered_warp_images[:, 1:].clone().cpu())
+            all_rendered_masks.append(rendered_warp_masks[:, 1:].clone().cpu())
             
         pred_image_for_depth_bcthw_minus1_1 = pred_image_for_depth_chw_0_1.unsqueeze(0).unsqueeze(2) * 2 - 1
         
@@ -494,33 +497,60 @@ def run_single_generation(
         final_width = args.width
         
         # Handle save_buffer visualization
+        # Instead of stacking all buffer layers (which can be huge for big caches),
+        # we composite them into a single reference view per frame.
         if args.save_buffer and all_rendered_warps:
-            squeezed_warps = [t.squeeze(0) for t in all_rendered_warps]
+            squeezed_warps = [t.squeeze(0) for t in all_rendered_warps] # List of (T_chunk, N, 3, H, W)
+            squeezed_masks = [t.squeeze(0) for t in all_rendered_masks] # List of (T_chunk, N, 1, H, W)
+
             if squeezed_warps:
                 n_max = max(t.shape[1] for t in squeezed_warps)
-                padded_t_list = []
-                for sq_t in squeezed_warps:
-                    current_n_i = sq_t.shape[1]
-                    padding_needed_dim1 = n_max - current_n_i
-                    pad_spec = (0,0, 0,0, 0,0, 0,padding_needed_dim1, 0,0)
-                    padded_t = F.pad(sq_t, pad_spec, mode='constant', value=-1.0)
-                    padded_t_list.append(padded_t)
                 
-                full_rendered_warp_tensor = torch.cat(padded_t_list, dim=0)
-                T_total_warp, _, C_dim, H_dim, W_dim = full_rendered_warp_tensor.shape
+                # Pad warps and masks to n_max
+                padded_warps = []
+                padded_masks = []
                 
-                buffer_video_TCHnW = full_rendered_warp_tensor.permute(0, 2, 3, 1, 4)
-                buffer_video_TCHWstacked = buffer_video_TCHnW.contiguous().view(T_total_warp, C_dim, H_dim, n_max * W_dim)
-                buffer_video_TCHWstacked = (buffer_video_TCHWstacked * 0.5 + 0.5) * 255.0
-                buffer_numpy_TCHWstacked = buffer_video_TCHWstacked.cpu().numpy().astype(np.uint8)
-                buffer_numpy_THWC = np.transpose(buffer_numpy_TCHWstacked, (0, 2, 3, 1))
+                for w, m in zip(squeezed_warps, squeezed_masks):
+                    # w: T_chunk, N_curr, C, H, W
+                    # Pad N dimension (dim 1)
+                    padding_needed = n_max - w.shape[1]
+                    # F.pad format: (W_l, W_r, H_l, H_r, C_l, C_r, N_l, N_r)
+                    pad_spec = (0,0, 0,0, 0,0, 0, padding_needed)
+                    
+                    w_padded = F.pad(w, pad_spec, mode='constant', value=-1.0) # Background color for warps
+                    m_padded = F.pad(m, pad_spec, mode='constant', value=0.0)  # Invalid mask
+                    
+                    padded_warps.append(w_padded)
+                    padded_masks.append(m_padded)
                 
-                min_len = min(buffer_numpy_THWC.shape[0], final_video_to_save.shape[0])
-                buffer_numpy_THWC = buffer_numpy_THWC[:min_len]
-                final_video_to_save = final_video_to_save[:min_len]
+                full_warps = torch.cat(padded_warps, dim=0) # T_total, N_max, 3, H, W
+                full_masks = torch.cat(padded_masks, dim=0) # T_total, N_max, 1, H, W
+                
+                # Composite buffers into a single canvas
+                # Assuming index 0 is newest, we render from N-1 (oldest) down to 0 (newest)
+                # Initialize canvas with -1 (black/background)
+                T_all, N_all, C_all, H_all, W_all = full_warps.shape
+                canvas = torch.full((T_all, C_all, H_all, W_all), -1.0, dtype=full_warps.dtype, device=full_warps.device)
+                
+                for n in range(N_all - 1, -1, -1):
+                    mask_n = full_masks[:, n]
+                    warp_n = full_warps[:, n]
+                    canvas = torch.where(mask_n > 0.5, warp_n, canvas)
 
-                final_video_to_save = np.concatenate([buffer_numpy_THWC, final_video_to_save], axis=2)
-                final_width = args.width * (1 + n_max)
+                # Post-process canvas
+                # [-1, 1] -> [0, 255] uint8 numpy
+                canvas = (canvas * 0.5 + 0.5).clamp(0, 1) * 255.0
+                canvas_np = canvas.permute(0, 2, 3, 1).cpu().numpy().astype(np.uint8) # T, H, W, 3
+                
+                # Ensure length matches generated video
+                min_len = min(canvas_np.shape[0], final_video_to_save.shape[0])
+                canvas_np = canvas_np[:min_len]
+                final_video_to_save = final_video_to_save[:min_len]
+                
+                # Concatenate side-by-side: [Reference Rendering] [Generated Video]
+                final_video_to_save = np.concatenate([canvas_np, final_video_to_save], axis=2)
+                final_width = args.width * 2
+                log.info(f"Concatenated reference rendering with generated video. Final width: {final_width}")
 
         # File naming
         save_name = f"{clip_name_base}_{save_idx}"
