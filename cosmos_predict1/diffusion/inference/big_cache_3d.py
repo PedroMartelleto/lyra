@@ -100,7 +100,7 @@ class Cache3D_Base:
             self.input_mask = None
             self.input_image = input_image
         
-        # EXPERIMENT: Keep entire cache on GPU to avoid CPU<->GPU transfer bottleneck
+        # Keep input_image on GPU for speed
         self.input_image = self.input_image.to(weight_dtype).to(self.device)
 
         if input_points is not None:
@@ -166,8 +166,11 @@ class Cache3D_Base:
         # Determine total number of warps: B * F_target * N
         total_items = B * F_target * N
         
-        # Warp chunk size (how many image-pose pairs to process at once on GPU)
-        warp_chunk_size = 8
+        if total_items == 0:
+            return torch.zeros(bs, F_target, N, C, H, W, device=self.device), torch.zeros(bs, F_target, N, 1, H, W, device=self.device)
+
+        # Warp chunk size increased for performance
+        warp_chunk_size = 64
         
         rendered_warp_images = []
         rendered_warp_masks = []
@@ -180,7 +183,8 @@ class Cache3D_Base:
         # Iterate in chunks
         for i in range(0, total_items, warp_chunk_size):
             actual_chunk_size = min(warp_chunk_size, total_items - i)
-            indices = torch.arange(i, i + actual_chunk_size)
+            # Create indices directly on device with explicit long type
+            indices = torch.arange(i, i + actual_chunk_size, device=self.device, dtype=torch.long)
             
             # Map flat index back to [b, f_target, n]
             n_idx = indices % N
@@ -194,8 +198,8 @@ class Cache3D_Base:
             else:
                 f_src_idx = (f_target_idx + start_frame_idx).clamp(0, F_in - 1)
 
-            # Gather source data (Input Images/Points) directly from GPU tensors
-            # Slicing keeps them on GPU
+            # Gather source data
+            # Use index select or advanced indexing. 
             batch_imgs = self.input_image[b_idx, f_src_idx, n_idx]
             batch_pts = self.input_points[b_idx, f_src_idx, n_idx]
             
@@ -211,6 +215,7 @@ class Cache3D_Base:
                     batch_bmasks = self.boundary_mask[b_idx, f_src_idx, n_idx, :, 0, 0]
 
             # Gather Targets
+            # Indexing on GPU tensors with GPU indices is efficient
             chunk_target_w2c = target_w2cs[b_idx, f_target_idx]
             chunk_target_intr = target_intrinsics[b_idx, f_target_idx]
 
@@ -241,13 +246,15 @@ class Cache3D_Base:
                 )
                 
                 # Move chunks to CPU to accumulate final result (avoiding VRAM OOM for output tensor)
-                # Although we keep points on GPU, the rendered 4D video volume is huge.
                 rendered_warp_images.append(chunk_warped_img.to("cpu"))
                 rendered_warp_masks.append(chunk_warped_mask.to("cpu"))
                 if render_depth:
                     rendered_warp_depth.append(chunk_warped_depth.to("cpu"))
 
         # Concatenate all chunks (on CPU)
+        if len(rendered_warp_images) == 0: # Handle empty cache edge case if any
+             return torch.zeros(bs, F_target, N, C, H, W, device=self.device), torch.zeros(bs, F_target, N, 1, H, W, device=self.device)
+
         pixels = torch.cat(rendered_warp_images, dim=0)
         masks = torch.cat(rendered_warp_masks, dim=0)
         
@@ -260,8 +267,6 @@ class Cache3D_Base:
             pixels_depth = rearrange(depths, "(b f n) h w -> b f n h w", b=bs, f=F_target, n=N)
             return pixels_depth.to(self.device), masks.to(self.device)
 
-        # Move result back to device for downstream model consumption
-        # WARNING: If N and F are large, this line is the memory bottleneck.
         return pixels.to(self.device), masks.to(self.device)
 
 
@@ -366,7 +371,7 @@ class Cache3D_Buffer(Cache3D_Base):
         
         new_points = unproject_points(new_depth, new_w2c, new_intrinsics, is_depth=self.is_depth)
         
-        # EXPERIMENT: Keep all updates on GPU
+        # Keep on GPU
         # new_image = new_image.cpu()
         # new_depth = new_depth.cpu()
         # new_points = new_points.cpu()

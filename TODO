@@ -1,3 +1,5 @@
+Go back in time with big_cache
+
 accelerate launch sample.py --config configs/demo/lyra_static.yaml
 
 - Compare lyra & DA3 3DGS before making 3D cache infinite
