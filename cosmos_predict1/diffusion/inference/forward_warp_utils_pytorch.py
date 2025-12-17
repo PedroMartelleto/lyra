@@ -280,6 +280,7 @@ def forward_warp(
         mask1 *= binary_mask.unsqueeze(1)
     warped_frame2, mask2 = bilinear_splatting(frame1, mask1, trans_depth1, flow12, None, is_image=is_image)
     warped_depth2 = None
+
     if render_depth or foreground_masking:
         warped_depth2 = bilinear_splatting(trans_depth1, mask1, trans_depth1, flow12, None, is_image=False)[0][:, 0]
     if foreground_masking:

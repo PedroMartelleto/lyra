@@ -1,3 +1,5 @@
+# cosmos_predict1/diffusion/inference/big_cache_3d.py
+
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -15,6 +17,7 @@
 
 import torch
 from einops import rearrange
+import math
 
 from cosmos_predict1.diffusion.inference.forward_warp_utils_pytorch import (
     forward_warp,
@@ -94,20 +97,24 @@ class Cache3D_Base:
         # Now input_image has the shape B x F x N x V x C x H x W
         if input_mask is not None:
             self.input_image, self.input_mask = input_image[:, :, :, :, :3], input_image[:, :, :, :, 3:]
-            self.input_mask = self.input_mask.to("cpu")
+            self.input_mask = self.input_mask.to(self.device)
         else:
             self.input_mask = None
             self.input_image = input_image
-        self.input_image = self.input_image.to(weight_dtype).to("cpu")
+        
+        # Keep input_image on GPU for speed
+        self.input_image = self.input_image.to(weight_dtype).to(self.device)
 
         if input_points is not None:
-            self.input_points = input_points.reshape(B, F, N, V, H, W, 3).to("cpu")
+            self.input_points = input_points.reshape(B, F, N, V, H, W, 3).to(self.device)
             self.input_depth = None
         else:
             input_depth = torch.nan_to_num(input_depth, nan=100)
             input_depth = torch.clamp(input_depth, min=0, max=100)
             if weight_dtype == torch.float16:
                 input_depth = torch.clamp(input_depth, max=70)
+            
+            # Compute points on GPU
             self.input_points = (
                 self._compute_input_points(
                     input_depth.reshape(-1, 1, H, W),
@@ -116,28 +123,32 @@ class Cache3D_Base:
                 )
                 .to(weight_dtype)
                 .reshape(B, F, N, V, H, W, 3)
-                .to("cpu")
+                .to(self.device)
             )
-            self.input_depth = input_depth
+            self.input_depth = input_depth.to(self.device)
 
         if self.filter_points_threshold < 1.0 and input_depth is not None:
             input_depth = input_depth.reshape(-1, 1, H, W)
-            depth_mask = reliable_depth_mask_range_batch(input_depth, ratio_thresh=self.filter_points_threshold).reshape(B, F, N, V, 1, H, W)
+            # Ensure calculations happen on device
+            depth_mask = reliable_depth_mask_range_batch(input_depth.to(self.device), ratio_thresh=self.filter_points_threshold).reshape(B, F, N, V, 1, H, W)
             if self.input_mask is None:
-                self.input_mask = depth_mask.to("cpu")
+                self.input_mask = depth_mask
             else:
-                self.input_mask = self.input_mask * depth_mask.to(self.input_mask.device)
+                self.input_mask = self.input_mask * depth_mask
+        
         self.boundary_mask = None
         if foreground_masking:
             input_depth = input_depth.reshape(-1, 1, H, W)
-            depth_mask = reliable_depth_mask_range_batch(input_depth)
-            self.boundary_mask = (~depth_mask).reshape(B, F, N, V, 1, H, W).to("cpu")
+            depth_mask = reliable_depth_mask_range_batch(input_depth.to(self.device))
+            self.boundary_mask = (~depth_mask).reshape(B, F, N, V, 1, H, W).to(self.device)
 
     def _compute_input_points(self, input_depth, input_w2c, input_intrinsics):
+        # Ensure computation happens on a capable device if possible, or CPU
+        comp_device = input_depth.device if input_depth.device.type == "cuda" else self.device
         input_points = unproject_points(
-            input_depth,
-            input_w2c,
-            input_intrinsics,
+            input_depth.to(comp_device),
+            input_w2c.to(comp_device),
+            input_intrinsics.to(comp_device),
             is_depth=self.is_depth,
         )
         return input_points
@@ -149,90 +160,117 @@ class Cache3D_Base:
         return self.input_image.shape[1]
 
     def render_cache(self, target_w2cs, target_intrinsics, render_depth=False, start_frame_idx=0):
+        # Optimized render_cache that avoids expanding the input tensor in memory
         bs, F_target, _, _ = target_w2cs.shape
-
-        B, F, N, V, C, H, W = self.input_image.shape
+        B, F_in, N, V, C, H, W = self.input_image.shape
         assert bs == B
+        
+        # Determine total number of warps: B * F_target * N
+        total_items = B * F_target * N
+        
+        if total_items == 0:
+            return torch.zeros(bs, F_target, N, C, H, W, device=self.device), torch.zeros(bs, F_target, N, 1, H, W, device=self.device)
 
-        target_w2cs = target_w2cs.reshape(B, F_target, 1, 4, 4).expand(B, F_target, N, 4, 4).reshape(-1, 4, 4)
-        target_intrinsics = (
-            target_intrinsics.reshape(B, F_target, 1, 3, 3).expand(B, F_target, N, 3, 3).reshape(-1, 3, 3)
-        )
+        # Warp chunk size increased for performance
+        warp_chunk_size = 64
+        
+        rendered_warp_images = []
+        rendered_warp_masks = []
+        rendered_warp_depth = []
 
-        # Keep large tensors on CPU; move only per-chunk slices to GPU inside the loop
-        first_images = rearrange(self.input_image[:, start_frame_idx:start_frame_idx+F_target].expand(B, F_target, N, V, C, H, W), "B F N V C H W-> (B F N) V C H W")
-        first_points = rearrange(
-            self.input_points[:, start_frame_idx:start_frame_idx+F_target].expand(B, F_target, N, V, H, W, 3), "B F N V H W C-> (B F N) V H W C"
-        )
-        first_masks = rearrange(
-            self.input_mask[:, start_frame_idx:start_frame_idx+F_target].expand(B, F_target, N, V, 1, H, W), "B F N V C H W-> (B F N) V C H W"
-        ) if self.input_mask is not None else None
-        boundary_masks = rearrange(
-            self.boundary_mask.expand(B, F_target, N, V, 1, H, W), "B F N V C H W-> (B F N) V C H W"
-        ) if self.boundary_mask is not None else None
+        # Ensure targets are on device
+        target_w2cs = target_w2cs.to(self.device)
+        target_intrinsics = target_intrinsics.to(self.device)
 
-        if first_images.shape[1] == 1:
-            warp_chunk_size = 2
-            rendered_warp_images = []
-            rendered_warp_masks = []
-            rendered_warp_depth = []
+        # Iterate in chunks
+        for i in range(0, total_items, warp_chunk_size):
+            actual_chunk_size = min(warp_chunk_size, total_items - i)
+            # Create indices directly on device with explicit long type
+            indices = torch.arange(i, i + actual_chunk_size, device=self.device, dtype=torch.long)
+            
+            # Map flat index back to [b, f_target, n]
+            n_idx = indices % N
+            rem = indices // N
+            f_target_idx = rem % F_target
+            b_idx = rem // F_target
+            
+            # Determine source frame index.
+            if F_in == 1:
+                f_src_idx = torch.zeros_like(indices) # Always 0
+            else:
+                f_src_idx = (f_target_idx + start_frame_idx).clamp(0, F_in - 1)
 
-            first_images = first_images.squeeze(1)
-            first_points = first_points.squeeze(1)
-            first_masks = first_masks.squeeze(1) if first_masks is not None else None
-            for i in range(0, first_images.shape[0], warp_chunk_size):
-                with torch.no_grad():
-                    imgs_chunk = first_images[i : i + warp_chunk_size].to(self.device, non_blocking=True)
-                    pts_chunk = first_points[i : i + warp_chunk_size].to(self.device, non_blocking=True)
-                    masks_chunk = (
-                        first_masks[i : i + warp_chunk_size].to(self.device, non_blocking=True)
-                        if first_masks is not None
-                        else None
-                    )
-                    bmask_chunk = (
-                        boundary_masks[i : i + warp_chunk_size, 0, 0].to(self.device, non_blocking=True)
-                        if boundary_masks is not None
-                        else None
-                    )
-                    (
-                        rendered_warp_images_chunk,
-                        rendered_warp_masks_chunk,
-                        rendered_warp_depth_chunk,
-                        _,
-                    ) = forward_warp(
-                        imgs_chunk,
-                        mask1=masks_chunk,
-                        depth1=None,
-                        transformation1=None,
-                        transformation2=target_w2cs[i : i + warp_chunk_size],
-                        intrinsic1=target_intrinsics[i : i + warp_chunk_size],
-                        intrinsic2=target_intrinsics[i : i + warp_chunk_size],
-                        render_depth=render_depth,
-                        world_points1=pts_chunk,
-                        foreground_masking=self.foreground_masking,
-                        boundary_mask=bmask_chunk,
-                    )
-                    rendered_warp_images.append(rendered_warp_images_chunk.to("cpu"))
-                    rendered_warp_masks.append(rendered_warp_masks_chunk.to("cpu"))
-                    if render_depth:
-                        rendered_warp_depth.append(rendered_warp_depth_chunk.to("cpu"))
-                    del imgs_chunk, pts_chunk, masks_chunk, bmask_chunk
-                    del rendered_warp_images_chunk, rendered_warp_masks_chunk
-                    if render_depth:
-                        del rendered_warp_depth_chunk
-                    torch.cuda.empty_cache()
-            rendered_warp_images = torch.cat(rendered_warp_images, dim=0)
-            rendered_warp_masks = torch.cat(rendered_warp_masks, dim=0)
-            if render_depth:
-                rendered_warp_depth = torch.cat(rendered_warp_depth, dim=0)
+            # Gather source data
+            # Use index select or advanced indexing. 
+            batch_imgs = self.input_image[b_idx, f_src_idx, n_idx]
+            batch_pts = self.input_points[b_idx, f_src_idx, n_idx]
+            
+            batch_masks = None
+            if self.input_mask is not None:
+                batch_masks = self.input_mask[b_idx, f_src_idx, n_idx]
+            
+            batch_bmasks = None
+            if self.boundary_mask is not None:
+                if self.boundary_mask.shape[1] == 1: # F=1
+                    # Fixed indexing: [Chunk, V=0, C=0] -> [Chunk, H, W]
+                    batch_bmasks = self.boundary_mask[b_idx, 0, n_idx, 0, 0]
+                else:
+                    # Fixed indexing: [Chunk, V=0, C=0] -> [Chunk, H, W]
+                    batch_bmasks = self.boundary_mask[b_idx, f_src_idx, n_idx, 0, 0]
 
-        else:
-            raise NotImplementedError
+            # Gather Targets
+            # Indexing on GPU tensors with GPU indices is efficient
+            chunk_target_w2c = target_w2cs[b_idx, f_target_idx]
+            chunk_target_intr = target_intrinsics[b_idx, f_target_idx]
 
-        pixels = rearrange(rendered_warp_images, "(b f n) c h w -> b f n c h w", b=bs, f=F_target, n=N)
-        masks = rearrange(rendered_warp_masks, "(b f n) c h w -> b f n c h w", b=bs, f=F_target, n=N)
+            # forward_warp expects [Chunk, C, H, W] if V=1 (squeezed)
+            if V == 1:
+                batch_imgs = batch_imgs.squeeze(1)
+                batch_pts = batch_pts.squeeze(1)
+                if batch_masks is not None: batch_masks = batch_masks.squeeze(1)
+            
+            with torch.no_grad():
+                (
+                    chunk_warped_img,
+                    chunk_warped_mask,
+                    chunk_warped_depth,
+                    _,
+                ) = forward_warp(
+                    frame1=batch_imgs,
+                    mask1=batch_masks,
+                    depth1=None,
+                    transformation1=None,
+                    transformation2=chunk_target_w2c,
+                    intrinsic1=chunk_target_intr,
+                    intrinsic2=chunk_target_intr,
+                    render_depth=render_depth,
+                    world_points1=batch_pts,
+                    foreground_masking=self.foreground_masking,
+                    boundary_mask=batch_bmasks,
+                )
+                
+                # Move chunks to CPU to accumulate final result (avoiding VRAM OOM for output tensor)
+                rendered_warp_images.append(chunk_warped_img.to("cpu"))
+                rendered_warp_masks.append(chunk_warped_mask.to("cpu"))
+                if render_depth:
+                    rendered_warp_depth.append(chunk_warped_depth.to("cpu"))
+
+        # Concatenate all chunks (on CPU)
+        if len(rendered_warp_images) == 0: # Handle empty cache edge case if any
+             return torch.zeros(bs, F_target, N, C, H, W, device=self.device), torch.zeros(bs, F_target, N, 1, H, W, device=self.device)
+
+        pixels = torch.cat(rendered_warp_images, dim=0)
+        masks = torch.cat(rendered_warp_masks, dim=0)
+        
+        # Reshape back to [B, F_target, N, C, H, W]
+        pixels = rearrange(pixels, "(b f n) c h w -> b f n c h w", b=bs, f=F_target, n=N)
+        masks = rearrange(masks, "(b f n) c h w -> b f n c h w", b=bs, f=F_target, n=N)
+        
         if render_depth:
-            pixels = rearrange(rendered_warp_depth, "(b f n) h w -> b f n h w", b=bs, f=F_target, n=N)
+            depths = torch.cat(rendered_warp_depth, dim=0)
+            pixels_depth = rearrange(depths, "(b f n) h w -> b f n h w", b=bs, f=F_target, n=N)
+            return pixels_depth.to(self.device), masks.to(self.device)
+
         return pixels.to(self.device), masks.to(self.device)
 
 
@@ -243,7 +281,7 @@ class Cache3D_Buffer(Cache3D_Base):
         self.noise_aug_strength = noise_aug_strength
         self.generator = generator
 
-    def update_cache(self, new_image, new_depth, new_w2c, new_mask=None, new_intrinsics=None, depth_alignment=True, alignment_method="non_rigid"):  # 3D cache
+    def update_cache(self, new_image, new_depth, new_w2c, new_mask=None, new_intrinsics=None, depth_alignment=True, alignment_method="non_rigid", prune_threshold=0.05):  # 3D cache
         new_image = new_image.to(self.weight_dtype).to(self.device)
         new_depth = new_depth.to(self.weight_dtype).to(self.device)
         new_w2c = new_w2c.to(self.weight_dtype).to(self.device)
@@ -257,13 +295,21 @@ class Cache3D_Buffer(Cache3D_Base):
             target_depth, target_mask = self.render_cache(
                 new_w2c.unsqueeze(1), new_intrinsics.unsqueeze(1), render_depth=True
             )
-            target_depth, target_mask = target_depth[:, :, 0], target_mask[:, :, 0]
+            # Check dimensions before squeezing to avoid errors if N > 1
+            if target_depth.ndim == 5: # B, 1, N, H, W
+                target_depth = target_depth.min(dim=2).values # Take closest depth across buffer
+                target_mask = target_mask.max(dim=2).values # Take union of masks
+            
+            # Now squeeze B and 1 dims
+            target_depth = target_depth.squeeze()
+            target_mask = target_mask.squeeze()
+            
             if alignment_method == "rigid":
                 new_depth = (
                     align_depth(
                         new_depth.squeeze(),
-                        target_depth.squeeze(),
-                        target_mask.bool().squeeze(),
+                        target_depth,
+                        target_mask.bool(),
                     )
                     .reshape_as(new_depth)
                     .detach()
@@ -273,8 +319,8 @@ class Cache3D_Buffer(Cache3D_Base):
                     new_depth = (
                         align_depth(
                             new_depth.squeeze(),
-                            target_depth.squeeze(),
-                            target_mask.bool().squeeze(),
+                            target_depth,
+                            target_mask.bool(),
                             k=new_intrinsics.squeeze(),
                             c2w=torch.inverse(new_w2c.squeeze()),
                             alignment_method="non_rigid",
@@ -287,33 +333,64 @@ class Cache3D_Buffer(Cache3D_Base):
                     )
             else:
                 raise NotImplementedError
-        new_points = unproject_points(new_depth, new_w2c, new_intrinsics, is_depth=self.is_depth).cpu()
-        new_image = new_image.cpu()
+        
+        # Calculate points (keep on device)
+        new_points = unproject_points(new_depth, new_w2c, new_intrinsics, is_depth=self.is_depth)
+        
+        # Prepare data for cache update (keep on device)
+        # new_image = new_image.cpu() # Commented out to keep on GPU
+        # new_points = new_points.cpu()
 
         if self.filter_points_threshold < 1.0:
             B, F, N, V, C, H, W = self.input_image.shape
-            new_depth = new_depth.reshape(-1, 1, H, W)
-            depth_mask = reliable_depth_mask_range_batch(new_depth, ratio_thresh=self.filter_points_threshold).reshape(B, 1, H, W)
+            new_depth_gpu = new_depth.reshape(-1, 1, H, W)
+            depth_mask = reliable_depth_mask_range_batch(new_depth_gpu, ratio_thresh=self.filter_points_threshold).reshape(B, 1, H, W)
             if new_mask is None:
-                new_mask = depth_mask.to("cpu")
+                new_mask = depth_mask # Keep on device
             else:
-                new_mask = new_mask * depth_mask.to(new_mask.device)
+                new_mask = new_mask * depth_mask # Keep on device
+        
         if new_mask is not None:
-            new_mask = new_mask.cpu()
+             new_mask = new_mask.to(self.device)
+
+        # --- FIX START: Calculate new boundary mask ---
+        new_boundary_mask = None
+        if self.boundary_mask is not None:
+            B, F, N, V, C, H, W = self.input_image.shape
+            # Calculate mask on device
+            d_mask = reliable_depth_mask_range_batch(new_depth.reshape(-1, 1, H, W).to(self.device))
+            # Reshape to [B, F=1, N=1, V=1, C=1, H, W] to match cache structure
+            new_boundary_mask = (~d_mask).reshape(B, 1, 1, 1, 1, H, W).to(self.device)
+        # --- FIX END ---
+
         if self.frame_buffer_max > 1:  # newest frame first
             if self.input_image.shape[2] < self.frame_buffer_max:
                 self.input_image = torch.cat([new_image[:, None, None, None], self.input_image], 2)
                 self.input_points = torch.cat([new_points[:, None, None, None], self.input_points], 2)
                 if self.input_mask is not None:
                     self.input_mask = torch.cat([new_mask[:, None, None, None], self.input_mask], 2)
+                # --- FIX: Concatenate boundary mask ---
+                if self.boundary_mask is not None:
+                    self.boundary_mask = torch.cat([new_boundary_mask, self.boundary_mask], 2)
             else:
                 self.input_image[:, :, 0] = new_image[:, None, None]
                 self.input_points[:, :, 0] = new_points[:, None, None]
                 if self.input_mask is not None:
                     self.input_mask[:, :, 0] = new_mask[:, None, None]
+                # --- FIX: Update boundary mask tip ---
+                if self.boundary_mask is not None:
+                    self.boundary_mask[:, :, 0] = new_boundary_mask[:, :, 0]
         else:
             self.input_image = new_image[:, None, None, None]
             self.input_points = new_points[:, None, None, None]
+            if new_mask is not None:
+                if self.input_mask is None:
+                     self.input_mask = new_mask[:, None, None, None]
+                else:
+                     self.input_mask[:, :, 0] = new_mask[:, None, None]
+            # --- FIX: Set boundary mask ---
+            if self.boundary_mask is not None:
+                self.boundary_mask = new_boundary_mask
 
 
     def render_cache(

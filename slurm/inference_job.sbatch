@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --account=a144
-#SBATCH --partition=normal
+#SBATCH --partition=debug
 #SBATCH --time=01:30:00
 #SBATCH --job-name=infer_gen3c
 #SBATCH --output=infer_gen3c.out
@@ -33,13 +33,16 @@ export PYTHONPATH=$(pwd)
 
 srun --environment=lyra bash -c "
 cd /iopsstor/scratch/cscs/pmartell/lyra/
-torchrun --nproc_per_node=1 cosmos_predict1/diffusion/inference/gen3c_single_image_sdg.py \
+torchrun --nproc_per_node=1 cosmos_predict1/diffusion/inference/big_cache_gen3c_single_image.py \
     --checkpoint_dir checkpoints \
     --num_gpus 1 \
     --input_image_path assets/Garden.jpg \
     --video_save_folder assets/demo/static/bigCache_speed5_more_trajs \
     --foreground_masking \
-    --multi_trajectory \
     --total_movement_distance_factor 5.0 \
-    --save_buffer
+    --save_buffer \
+    --sequential_trajectory \
+    --num_steps 1
 "
+
+# --multi_trajectory \
