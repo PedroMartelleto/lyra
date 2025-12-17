@@ -41,8 +41,7 @@ torchrun --nproc_per_node=1 cosmos_predict1/diffusion/inference/big_cache_gen3c_
     --foreground_masking \
     --total_movement_distance_factor 5.0 \
     --save_buffer \
-    --sequential_trajectory \
-    --num_steps 1
+    --sequential_trajectory
 "
 
 # --multi_trajectory \

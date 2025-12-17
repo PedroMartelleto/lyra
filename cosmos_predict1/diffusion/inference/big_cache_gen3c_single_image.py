@@ -35,8 +35,6 @@ from cosmos_predict1.diffusion.inference.camera_utils import generate_camera_tra
 import torch.nn.functional as F
 torch.enable_grad(False)
 
-MAX_DEPTH = 80
-
 def create_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Video to world generation demo script")
     # Add common arguments
@@ -127,11 +125,9 @@ def create_parser() -> argparse.ArgumentParser:
         help="Multiply multi trajectory setup with movement distance factor (larger means more movement but potentially more artifacts)",
     )
     return parser
-
 def parse_arguments() -> argparse.Namespace:
     parser = create_parser()
     return parser.parse_args()
-
 
 def validate_args(args):
     assert args.num_video_frames is not None, "num_video_frames must be provided"
@@ -163,7 +159,7 @@ def _predict_moge_depth(current_image_path: str | np.ndarray,
     moge_intrinsics_33_full_normalized = moge_output_full["intrinsics"]
     moge_mask_hw_full = moge_output_full["mask"]
 
-    moge_depth_hw_full = torch.where(moge_mask_hw_full==0, torch.tensor(MAX_DEPTH, device=moge_depth_hw_full.device), moge_depth_hw_full)
+    moge_depth_hw_full = torch.where(moge_mask_hw_full==0, torch.tensor(1000.0, device=moge_depth_hw_full.device), moge_depth_hw_full)
     moge_intrinsics_33_full_pixel = moge_intrinsics_33_full_normalized.clone()
     moge_intrinsics_33_full_pixel[0, 0] *= depth_pred_w
     moge_intrinsics_33_full_pixel[1, 1] *= depth_pred_h
@@ -204,8 +200,8 @@ def _predict_moge_depth(current_image_path: str | np.ndarray,
     moge_intrinsics_33[0, 2] *= width_scale_factor  # cx
 
     moge_depth_b11hw = moge_depth_hw.unsqueeze(0).unsqueeze(0).unsqueeze(0)
-    moge_depth_b11hw = torch.nan_to_num(moge_depth_b11hw, nan=MAX_DEPTH)
-    moge_depth_b11hw = torch.clamp(moge_depth_b11hw, min=0, max=MAX_DEPTH)
+    moge_depth_b11hw = torch.nan_to_num(moge_depth_b11hw, nan=1e4)
+    moge_depth_b11hw = torch.clamp(moge_depth_b11hw, min=0, max=1e4)
     moge_mask_b11hw = moge_mask_hw.unsqueeze(0).unsqueeze(0).unsqueeze(0)
     moge_intrinsics_b133 = moge_intrinsics_33.unsqueeze(0).unsqueeze(0)
     initial_w2c_44 = torch.eye(4, dtype=torch.float32, device=device)
@@ -229,12 +225,22 @@ def _predict_moge_depth_from_tensor(
     moge_mask_hw_full = moge_output_full["mask"]        # (moge_inf_h, moge_inf_w)
 
     moge_depth_11hw = moge_depth_hw_full.unsqueeze(0).unsqueeze(0)
-    moge_depth_11hw = torch.nan_to_num(moge_depth_11hw, nan=MAX_DEPTH)
-    moge_depth_11hw = torch.clamp(moge_depth_11hw, min=0, max=MAX_DEPTH)
+    moge_depth_11hw = torch.nan_to_num(moge_depth_11hw, nan=1e4)
+    moge_depth_11hw = torch.clamp(moge_depth_11hw, min=0, max=1e4)
     moge_mask_11hw = moge_mask_hw_full.unsqueeze(0).unsqueeze(0)
-    moge_depth_11hw = torch.where(moge_mask_11hw==0, torch.tensor(MAX_DEPTH, device=moge_depth_11hw.device), moge_depth_11hw)
+    moge_depth_11hw = torch.where(moge_mask_11hw==0, torch.tensor(1000.0, device=moge_depth_11hw.device), moge_depth_11hw)
 
     return moge_depth_11hw, moge_mask_11hw
+
+trajectories_map = {
+    "left": {"traj_idx": 0, "movement_distance_range": [0.2, 0.3]},
+    "right": {"traj_idx": 1, "movement_distance_range": [0.2, 0.3]},
+    "up": {"traj_idx": 2, "movement_distance_range": [0.1, 0.2]},
+    "zoom_out": {"traj_idx": 3, "movement_distance_range": [0.3, 0.4]},
+    "zoom_in": {"traj_idx": 4, "movement_distance_range": [0.3, 0.4]},
+    "clockwise": {"traj_idx": 5, "movement_distance_range": [0.4, 0.6]},
+}
+
 
 def demo_sequential(args):
     """
@@ -282,7 +288,6 @@ def demo_sequential(args):
     sample_n_frames = pipeline.model.chunk_size
 
     # Define trajectory sequence
-    # This list can be modified to include whatever sequence is desired
     trajectories = [
         "left",
         "right",
@@ -300,16 +305,15 @@ def demo_sequential(args):
     (
         moge_image_b1chw_float,
         moge_depth_b11hw,
-        _, # mask not strictly used in basic cache init
+        _, 
         moge_initial_w2c_b144,
         moge_intrinsics_b133,
     ) = _predict_moge_depth(
         args.input_image_path, args.height, args.width, device, moge_model
     )
 
-    # Force a larger buffer to hold accumulated frames (1 initial + 3 per trajectory)
-    # 1 + 6 trajectories * 3 frames = 19 frames. Setting to 32 to be safe.
-    accumulated_frame_buffer_max = 32 
+    # Force a larger buffer to hold accumulated frames
+    accumulated_frame_buffer_max = 100 
     
     cache = Cache3D_Buffer(
         frame_buffer_max=accumulated_frame_buffer_max, 
@@ -323,15 +327,11 @@ def demo_sequential(args):
         foreground_masking=args.foreground_masking,
     )
 
-    # Initialize current state with input image pose
-    # Shapes: [1, 4, 4] and [1, 3, 3]
+    # Initialize current state with input image pose [1, 4, 4] and [1, 3, 3]
     current_w2c = moge_initial_w2c_b144[:, 0]
     current_intrinsics = moge_intrinsics_b133[:, 0]
     
-    # Keep track of the LAST generated frame to serve as visual input for the pipeline's next generation
-    # Initial visual input is the loaded image
-    # moge_image_b1chw_float is [B, T, C, H, W] -> [1, 1, 3, H, W]
-    # We need [B, C, T, H, W] -> [1, 3, 1, H, W]
+    # Keep track of the LAST generated frame for visual conditioning
     current_visual_input = moge_image_b1chw_float.permute(0, 2, 1, 3, 4)
     
     base_save_folder = args.video_save_folder
@@ -341,57 +341,146 @@ def demo_sequential(args):
     for traj_idx, traj_type in enumerate(trajectories):
         log.info(f"--- Starting Trajectory {traj_idx}: {traj_type} ---")
         
-        # A. Generate Camera Trajectory starting from current pose
+        # A. Generate Camera Trajectory
         try:
-            # We assume current_w2c is [1, 4, 4], remove batch dim for util if needed or handle inside
-            # generate_camera_trajectory handles batch dim if passed correctly.
-            # Passing [4, 4] by squeezing batch dim 0.
+            move_dist = random.uniform(
+                trajectories_map[traj_type]["movement_distance_range"][0],
+                trajectories_map[traj_type]["movement_distance_range"][1]
+            ) * args.total_movement_distance_factor
+
             generated_w2cs, generated_intrinsics = generate_camera_trajectory(
                 trajectory_type=traj_type,
-                initial_w2c=current_w2c[0], 
-                initial_intrinsics=current_intrinsics[0],
+                initial_w2c=current_w2c[0],  # Pass [4, 4]
+                initial_intrinsics=current_intrinsics[0], # Pass [3, 3]
                 num_frames=args.num_video_frames,
-                movement_distance=args.movement_distance,
+                movement_distance=move_dist,
                 camera_rotation=args.camera_rotation,
                 center_depth=1.0, 
                 device=device.type,
                 **args.camera_gen_kwargs,
             )
-            # generate_camera_trajectory returns [1, T, 4, 4], [1, T, 3, 3]
         except (ValueError, NotImplementedError) as e:
             log.critical(f"Failed to generate trajectory {traj_type}: {e}")
             break
 
-        # B. Render Cache (Project existing PC to new views)
-        # We only generate the first chunk (sample_n_frames) for the main video generation
-        # NOTE: If performing autoregressive generation *within* the trajectory, that loop happens inside here too
-        # For simplicity, assuming 1 chunk per trajectory for this demo structure, 
-        # or we just render the first chunk needed for the pipeline.
-        
-        # Using 0:sample_n_frames (e.g. 121 frames)
+        # B. Render Cache with DEPTH
         render_w2cs = generated_w2cs[:, 0:sample_n_frames]
         render_intrinsics = generated_intrinsics[:, 0:sample_n_frames]
         
-        log.info(f"Rendering cache for {traj_type}...")
+        log.info(f"Rendering cache for {traj_type} (with depth)...")
+        # Request depth to perform z-buffering manually
         rendered_warp_images, rendered_warp_masks = cache.render_cache(
             render_w2cs,
             render_intrinsics,
+            render_depth=True
         )
+        
+        # rendered_warp_images: [B=1, T, N, C, H, W]
+        # Here "images" contains RGB (channels 0,1,2)
+        # Note: render_cache returns `pixels` which usually contains RGB (C=3)
+        # BUT we asked for render_depth=True.
+        # In `cache_3d.py`, if render_depth=True, it returns:
+        # return pixels.to(self.device), masks.to(self.device)
+        # Wait, if render_depth=True in `Cache3D_Buffer.render_cache`, it calls super().render_cache
+        # In `Cache3D_Base.render_cache`:
+        # if render_depth:
+        #     depths = torch.cat(rendered_warp_depth, dim=0)
+        #     pixels_depth = rearrange(depths, "(b f n) h w -> b f n h w", b=bs, f=F_target, n=N)
+        #     return pixels_depth.to(self.device), masks.to(self.device)
+        # It ONLY returns depth if render_depth=True! That's problematic for us, we want BOTH.
+
+        # WORKAROUND: Call render_cache TWICE or rely on internal behavior?
+        # Actually `Cache3D_Base.render_cache` returns ONLY depth if true.
+        # So we must call it twice: once for RGB, once for Depth.
+        
+        # 1. Render RGB
+        rgb_warps, rgb_masks = cache.render_cache(render_w2cs, render_intrinsics, render_depth=False)
+        # 2. Render Depth
+        depth_warps, _ = cache.render_cache(render_w2cs, render_intrinsics, render_depth=True)
+        # depth_warps is [B, T, N, H, W] (no channel dim, or squeeze it)
+
+        # Handle Save Buffer (Visualization) - Use FULL cache for this
+        buffer_vis_np = None
+        if args.save_buffer:
+            # rgb_warps: [B, T, N, C, H, W] -> Squeeze B -> [T, N, C, H, W]
+            squeezed_warps = rgb_warps.detach().cpu().squeeze(0)
+            T_dim, N_dim, C_dim, H_dim, W_dim = squeezed_warps.shape
+            
+            # Stack buffers horizontally: [T, C, H, N*W]
+            buffer_video_TCHnW = squeezed_warps.permute(0, 2, 3, 1, 4) # [T, C, H, N, W]
+            buffer_video_TCHWstacked = buffer_video_TCHnW.contiguous().view(T_dim, C_dim, H_dim, N_dim * W_dim)
+            
+            # Normalize to 0-255 uint8, [T, H, W_stacked, C]
+            buffer_video_TCHWstacked = (buffer_video_TCHWstacked * 0.5 + 0.5).clamp(0, 1) * 255.0
+            buffer_vis_np = buffer_video_TCHWstacked.permute(0, 2, 3, 1).numpy().astype(np.uint8)
+
+        # FIX: Aggregate frames 1..N into a single background frame using Z-buffering
+        # rgb_warps: [B, T, N, 3, H, W]
+        # depth_warps: [B, T, N, H, W] or [B, T, N, 1, H, W] check shape
+        if depth_warps.dim() == 5:
+            depth_warps = depth_warps.unsqueeze(3) # Ensure [B, T, N, 1, H, W]
+        
+        B_size, T_size, N_size, C_size, H_size, W_size = rgb_warps.shape
+        
+        # Slice 0: Recent frame (Always keep)
+        recent_rgb = rgb_warps[:, :, 0:1] # [B, T, 1, 3, H, W]
+        recent_mask = rgb_masks[:, :, 0:1]
+
+        # Slice 1..N: History frames
+        history_rgb = rgb_warps[:, :, 1:] # [B, T, N-1, 3, H, W]
+        history_depth = depth_warps[:, :, 1:] # [B, T, N-1, 1, H, W]
+        history_mask = rgb_masks[:, :, 1:] # [B, T, N-1, 1, H, W]
+
+        # Handle case where history is empty (first iteration)
+        if N_size > 1:
+            # Mask out invalid depths (set to infinity)
+            # Mask is 1 for valid, 0 for invalid.
+            # depth > 0 check usually implies validity too, but let's use mask.
+            # If mask is 0, set depth to INF
+            
+            # history_mask [B, T, N-1, 1, H, W]
+            invalid_mask = (history_mask < 0.5) 
+            history_depth_masked = history_depth.clone()
+            history_depth_masked[invalid_mask] = float('inf')
+            
+            # Find min depth across N dimension (dim=2)
+            # min_vals: [B, T, 1, H, W], min_indices: [B, T, 1, H, W]
+            # Squeeze dim 3 (channel 1) for min()
+            history_depth_squeezed = history_depth_masked.squeeze(3) # [B, T, N-1, H, W]
+            min_depth_vals, min_indices = torch.min(history_depth_squeezed, dim=2, keepdim=True) # [B, T, 1, H, W]
+            
+            # Expand indices for gather: [B, T, 1, 3, H, W]
+            min_indices_expanded = min_indices.unsqueeze(3).expand(-1, -1, -1, 3, -1, -1)
+            
+            # Gather RGB based on min depth indices
+            # history_rgb: [B, T, N-1, 3, H, W]
+            aggregated_history_rgb = torch.gather(history_rgb, 2, min_indices_expanded) # [B, T, 1, 3, H, W]
+            
+            # Compute aggregated mask (Union of masks or mask of chosen pixel?)
+            # Valid if min_depth is not INF
+            aggregated_history_mask = (min_depth_vals < 1e5).float().unsqueeze(3) # [B, T, 1, 1, H, W]
+            
+            # Concatenate Recent + Aggregated History
+            input_warps = torch.cat([recent_rgb, aggregated_history_rgb], dim=2)
+            input_masks = torch.cat([recent_mask, aggregated_history_mask], dim=2)
+        
+        else:
+            # If no history yet, just replicate recent or use zeros?
+            # Model expects 2 frames. If we only have 1, usually we pad with zeros or replicate.
+            # Let's pad with zeros for slot 2.
+            zeros_rgb = torch.zeros_like(recent_rgb)
+            zeros_mask = torch.zeros_like(recent_mask)
+            input_warps = torch.cat([recent_rgb, zeros_rgb], dim=2)
+            input_masks = torch.cat([recent_mask, zeros_mask], dim=2)
 
         # C. Generate Video
         log.info(f"Generating video for {traj_type}...")
-
-        # all_rendered_warps = []
-        # if args.save_buffer:
-        #     all_rendered_warps.append(rendered_warp_images.clone().cpu())
-        
-        # Use current_visual_input (last frame of previous run) as conditioning image
         generated_output = pipeline.generate(
-            prompt=args.prompt, # Use valid prompt provided in args
-            image_path=current_visual_input, # Pass tensor directly
+            prompt=args.prompt,
+            image_path=current_visual_input,
             negative_prompt=args.negative_prompt,
-            rendered_warp_images=rendered_warp_images,
-            rendered_warp_masks=rendered_warp_masks,
+            rendered_warp_images=input_warps, # [B, T, 2, 3, H, W]
+            rendered_warp_masks=input_masks,  # [B, T, 2, 1, H, W]
             return_latents=True,
         )
         
@@ -400,56 +489,35 @@ def demo_sequential(args):
             break
             
         video_frames, prompt_out, latents = generated_output
-        # video_frames is numpy [T, H, W, C] in 0..255
+        # video_frames is [T, H, W, C] numpy uint8
+
+        # Combine with buffer if requested
+        final_video_to_save = video_frames
+        if buffer_vis_np is not None:
+             # Ensure dimensions match (they should if frames count matches)
+             if buffer_vis_np.shape[0] == video_frames.shape[0]:
+                 final_video_to_save = np.concatenate([buffer_vis_np, video_frames], axis=2)
+                 log.info(f"Concatenated buffer visualization. Width: {final_video_to_save.shape[2]}")
         
         # D. Update 3D Cache
-        # Select last 3 frames to update cache
-        T = len(video_frames)
-        # indices: 1/3 mark, 2/3 mark, and last frame
-        indices_to_update = [T // 3, (T * 2) // 3, T - 1]
-        
-        log.info(f"Updating 3D cache with frames {indices_to_update} from {traj_type}...")
-
-        print(f"\n[DEBUG] --- Trajectory: {traj_type} ---")
-        print(f"[DEBUG] video_frames length (T): {T}")
-        print(f"[DEBUG] indices_to_update: {indices_to_update}")
-        print(f"[DEBUG] render_w2cs shape: {render_w2cs.shape}")
-        print(f"[DEBUG] render_intrinsics shape: {render_intrinsics.shape}")
-        
-        # Check cache internal state
-        if hasattr(cache, 'input_image'):
-            print(f"[DEBUG] cache.input_image shape: {cache.input_image.shape}")
-        
-        # Check if indices exceed dimensions
-        max_idx = max(indices_to_update)
-        w2c_len = render_w2cs.shape[1]
-        print(f"[DEBUG] Max index requested: {max_idx}, Available W2C frames: {w2c_len}")
-        
-        if max_idx >= w2c_len:
-            print(f"[DEBUG] ⚠️ CRITICAL: Index {max_idx} is out of bounds for W2C (size {w2c_len})")
+        # one third, two thirds, and last frame
+        indices_to_update = [
+            len(video_frames) // 3,
+            2 * len(video_frames) // 3,
+            len(video_frames) - 1
+        ]
         
         for i in indices_to_update:
-            # 1. Get RGB Frame -> Tensor 0..1 (C, H, W)
             frame_np = video_frames[i]
             frame_tensor = torch.tensor(frame_np, device=device).permute(2, 0, 1).float() / 255.0
             
-            # 2. Predict Depth
             pred_depth, _ = _predict_moge_depth_from_tensor(frame_tensor, moge_model)
             
-            # 3. Get Pose (Index in generated trajectory)
-            # generated_w2cs is [1, T, 4, 4]. i is index in video_frames.
-            # Assuming 1-to-1 mapping between generated video frames and trajectory frames
-            # frame i corresponds to render_w2cs index i
-            pose = render_w2cs[:, i] # [1, 4, 4]
-            intr = render_intrinsics[:, i] # [1, 3, 3]
-
-            # 4. Update Cache
-            # new_image expects [B, C, H, W] range [-1, 1]
-            # frame_tensor is [C, H, W] 0..1
+            pose = render_w2cs[:, i]
+            intr = render_intrinsics[:, i]
+            
             img_input = (frame_tensor.unsqueeze(0) * 2.0) - 1.0
             
-            print(f"[DEBUG] pred_depth shape: {pred_depth.shape}, pose shape: {pose.shape}, intr shape: {intr.shape}")
-
             cache.update_cache(
                 new_image=img_input,
                 new_depth=pred_depth,
@@ -460,24 +528,20 @@ def demo_sequential(args):
         # E. Save Video
         save_path = os.path.join(base_save_folder, f"traj_{traj_idx}_{traj_type}.mp4")
         save_video(
-            video=video_frames,
+            video=final_video_to_save,
             fps=args.fps,
             H=args.height,
-            W=args.width,
+            W=final_video_to_save.shape[2], # Use actual width (inc. buffer)
             video_save_quality=8,
             video_save_path=save_path,
         )
         log.info(f"Saved video to {save_path}")
 
         # F. Update State for next iteration
-        # New start pose is the END of the current trajectory
-        # Actually, generated_w2cs contains the full path. The "end" is the last frame.
-        current_w2c = generated_w2cs[:, -1] # [1, 4, 4]
-        current_intrinsics = generated_intrinsics[:, -1] # [1, 3, 3]
+        current_w2c = generated_w2cs[:, -1] 
+        current_intrinsics = generated_intrinsics[:, -1] 
         
-        # New visual input is the LAST frame of the current video
-        # Need to format as [B, C, T, H, W] range [-1, 1]
-        last_frame = video_frames[-1] # [H, W, C]
+        last_frame = video_frames[-1]
         last_tensor = torch.tensor(last_frame, device=device).permute(2, 0, 1).float() / 255.0
         current_visual_input = (last_tensor.unsqueeze(0).unsqueeze(2) * 2.0) - 1.0
 
@@ -485,6 +549,7 @@ def demo_sequential(args):
         parallel_state.destroy_model_parallel()
         import torch.distributed as dist
         dist.destroy_process_group()
+
 
 if __name__ == "__main__":
     args = parse_arguments()
@@ -494,7 +559,4 @@ if __name__ == "__main__":
     args.disable_prompt_upsampler = True
     
     if args.sequential_trajectory:
-        # NEW Mode: Persistent cache sequential generation
         demo_sequential(args)
-    else:
-        raise NotImplementedError("This script currently only supports sequential_trajectory mode.")
