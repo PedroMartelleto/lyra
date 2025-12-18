@@ -12,3 +12,5 @@ output_results/
 output*
 *.err
 *.out
+core_nid*
+debug/

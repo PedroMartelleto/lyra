@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --account=a144
-#SBATCH --partition=debug
+#SBATCH --partition=normal
 #SBATCH --time=01:30:00
 #SBATCH --job-name=infer_gen3c
 #SBATCH --output=infer_gen3c.out
@@ -37,11 +37,12 @@ torchrun --nproc_per_node=1 cosmos_predict1/diffusion/inference/big_cache_gen3c_
     --checkpoint_dir checkpoints \
     --num_gpus 1 \
     --input_image_path assets/Garden.jpg \
-    --video_save_folder assets/demo/static/bigCache_speed5_more_trajs \
+    --video_save_folder assets/demo/static/Actual_bigCache_speed5_more_trajs \
     --foreground_masking \
     --total_movement_distance_factor 5.0 \
     --save_buffer \
-    --sequential_trajectory
+    --sequential_trajectory \
+    --num_steps 1
 "
 
 # --multi_trajectory \

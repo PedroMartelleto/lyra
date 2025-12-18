@@ -58,7 +58,6 @@ def create_parser() -> argparse.ArgumentParser:
             "left",
             "right",
             "up",
-            "down",
             "zoom_in",
             "zoom_out",
             "clockwise",
@@ -125,6 +124,7 @@ def create_parser() -> argparse.ArgumentParser:
         help="Multiply multi trajectory setup with movement distance factor (larger means more movement but potentially more artifacts)",
     )
     return parser
+
 def parse_arguments() -> argparse.Namespace:
     parser = create_parser()
     return parser.parse_args()
@@ -292,9 +292,9 @@ def demo_sequential(args):
         "left",
         "right",
         "up",
-        "down",
         "zoom_in",
-        "zoom_out"
+        "zoom_out",
+        "clockwise"
     ]
     
     # 2. Load Initial Image and Setup Cache ONCE
@@ -313,7 +313,7 @@ def demo_sequential(args):
     )
 
     # Force a larger buffer to hold accumulated frames
-    accumulated_frame_buffer_max = 100 
+    accumulated_frame_buffer_max = 20 
     
     cache = Cache3D_Buffer(
         frame_buffer_max=accumulated_frame_buffer_max, 
@@ -374,25 +374,7 @@ def demo_sequential(args):
             render_intrinsics,
             render_depth=True
         )
-        
-        # rendered_warp_images: [B=1, T, N, C, H, W]
-        # Here "images" contains RGB (channels 0,1,2)
-        # Note: render_cache returns `pixels` which usually contains RGB (C=3)
-        # BUT we asked for render_depth=True.
-        # In `cache_3d.py`, if render_depth=True, it returns:
-        # return pixels.to(self.device), masks.to(self.device)
-        # Wait, if render_depth=True in `Cache3D_Buffer.render_cache`, it calls super().render_cache
-        # In `Cache3D_Base.render_cache`:
-        # if render_depth:
-        #     depths = torch.cat(rendered_warp_depth, dim=0)
-        #     pixels_depth = rearrange(depths, "(b f n) h w -> b f n h w", b=bs, f=F_target, n=N)
-        #     return pixels_depth.to(self.device), masks.to(self.device)
-        # It ONLY returns depth if render_depth=True! That's problematic for us, we want BOTH.
 
-        # WORKAROUND: Call render_cache TWICE or rely on internal behavior?
-        # Actually `Cache3D_Base.render_cache` returns ONLY depth if true.
-        # So we must call it twice: once for RGB, once for Depth.
-        
         # 1. Render RGB
         rgb_warps, rgb_masks = cache.render_cache(render_w2cs, render_intrinsics, render_depth=False)
         # 2. Render Depth
@@ -414,7 +396,6 @@ def demo_sequential(args):
             buffer_video_TCHWstacked = (buffer_video_TCHWstacked * 0.5 + 0.5).clamp(0, 1) * 255.0
             buffer_vis_np = buffer_video_TCHWstacked.permute(0, 2, 3, 1).numpy().astype(np.uint8)
 
-        # FIX: Aggregate frames 1..N into a single background frame using Z-buffering
         # rgb_warps: [B, T, N, 3, H, W]
         # depth_warps: [B, T, N, H, W] or [B, T, N, 1, H, W] check shape
         if depth_warps.dim() == 5:
@@ -456,10 +437,37 @@ def demo_sequential(args):
             # history_rgb: [B, T, N-1, 3, H, W]
             aggregated_history_rgb = torch.gather(history_rgb, 2, min_indices_expanded) # [B, T, 1, 3, H, W]
             
+            # Save input depths for debugging as 0 -> black, 1 -> white & output for debugging
+            def save_debug_depth(depth_tensor, save_path):
+                depth_np = depth_tensor.squeeze().detach().cpu().contiguous().numpy() # [H, W]
+                depth_np_clipped = np.clip(depth_np, 0, 10) # Clip for better visualization
+                depth_np_normalized = (depth_np_clipped / 10.0 * 255.0).astype(np.uint8)
+                # save with PIL
+                from PIL import Image
+                img = Image.fromarray(depth_np_normalized)
+                img.save(save_path)
+            
+            def save_debug_rgb(rgb_tensor, save_path):
+                rgb_np = rgb_tensor.detach().cpu().clone().contiguous().numpy() # [3, H, W]
+                rgb_np = np.transpose(rgb_np, (1, 2, 0)) #
+                rgb_np_clipped = np.clip(rgb_np * 255.0, 0, 255).astype(np.uint8)
+                # save with PIL
+                from PIL import Image
+                img = Image.fromarray(rgb_np_clipped)
+                img.save(save_path)
+            
             # Compute aggregated mask (Union of masks or mask of chosen pixel?)
             # Valid if min_depth is not INF
             aggregated_history_mask = (min_depth_vals < 1e5).float().unsqueeze(3) # [B, T, 1, 1, H, W]
-            
+            # aggregated_history_rgb[~(aggregated_history_mask.bool()).expand_as(aggregated_history_rgb)] = 0
+
+            debug_depth_save_folder = "debug/"
+            os.makedirs(debug_depth_save_folder, exist_ok=True)
+            save_debug_depth(min_depth_vals[0,0], os.path.join(debug_depth_save_folder, f"traj_{traj_idx}_{traj_type}_min_depth.png"))
+            save_debug_depth(history_depth[0,0,0], os.path.join(debug_depth_save_folder, f"traj_{traj_idx}_{traj_type}_history_depth_0.png"))
+            save_debug_rgb(aggregated_history_rgb[0, 0, 0], os.path.join(debug_depth_save_folder, f"traj_{traj_idx}_{traj_type}_aggregated_history_rgb_0.png"))
+            save_debug_rgb(recent_rgb[0, 0, 0], os.path.join(debug_depth_save_folder, f"traj_{traj_idx}_{traj_type}_recent_rgb.png"))
+
             # Concatenate Recent + Aggregated History
             input_warps = torch.cat([recent_rgb, aggregated_history_rgb], dim=2)
             input_masks = torch.cat([recent_mask, aggregated_history_mask], dim=2)
@@ -472,6 +480,9 @@ def demo_sequential(args):
             zeros_mask = torch.zeros_like(recent_mask)
             input_warps = torch.cat([recent_rgb, zeros_rgb], dim=2)
             input_masks = torch.cat([recent_mask, zeros_mask], dim=2)
+        
+        input_warps = input_warps.to(device)
+        input_masks = input_masks.to(device)
 
         # C. Generate Video
         log.info(f"Generating video for {traj_type}...")
@@ -502,8 +513,8 @@ def demo_sequential(args):
         # D. Update 3D Cache
         # one third, two thirds, and last frame
         indices_to_update = [
-            len(video_frames) // 3,
-            2 * len(video_frames) // 3,
+            # len(video_frames) // 3,
+            # 2 * len(video_frames) // 3,
             len(video_frames) - 1
         ]
         
@@ -538,12 +549,17 @@ def demo_sequential(args):
         log.info(f"Saved video to {save_path}")
 
         # F. Update State for next iteration
-        current_w2c = generated_w2cs[:, -1] 
-        current_intrinsics = generated_intrinsics[:, -1] 
+        origin_w2c = moge_initial_w2c_b144[:, 0]
+        origin_intrinsics = moge_intrinsics_b133[:, 0]
+        origin_visual_input = moge_image_b1chw_float.permute(0, 2, 1, 3, 4)
+
+        current_w2c = origin_w2c
+        current_intrinsics = origin_intrinsics
+        current_visual_input = origin_visual_input
         
-        last_frame = video_frames[-1]
-        last_tensor = torch.tensor(last_frame, device=device).permute(2, 0, 1).float() / 255.0
-        current_visual_input = (last_tensor.unsqueeze(0).unsqueeze(2) * 2.0) - 1.0
+        # last_frame = video_frames[-1]
+        # last_tensor = torch.tensor(last_frame, device=device).permute(2, 0, 1).float() / 255.0
+        # current_visual_input = (last_tensor.unsqueeze(0).unsqueeze(2) * 2.0) - 1.0
 
     if args.num_gpus > 1:
         parallel_state.destroy_model_parallel()

@@ -256,8 +256,8 @@ class Cache3D_Base:
                     rendered_warp_depth.append(chunk_warped_depth.to("cpu"))
 
         # Concatenate all chunks (on CPU)
-        if len(rendered_warp_images) == 0: # Handle empty cache edge case if any
-             return torch.zeros(bs, F_target, N, C, H, W, device=self.device), torch.zeros(bs, F_target, N, 1, H, W, device=self.device)
+        if len(rendered_warp_images) == 0: 
+             return torch.zeros(bs, F_target, N, C, H, W, device="cpu"), torch.zeros(bs, F_target, N, 1, H, W, device="cpu")
 
         pixels = torch.cat(rendered_warp_images, dim=0)
         masks = torch.cat(rendered_warp_masks, dim=0)
@@ -269,9 +269,9 @@ class Cache3D_Base:
         if render_depth:
             depths = torch.cat(rendered_warp_depth, dim=0)
             pixels_depth = rearrange(depths, "(b f n) h w -> b f n h w", b=bs, f=F_target, n=N)
-            return pixels_depth.to(self.device), masks.to(self.device)
+            return pixels_depth, masks # Return on CPU
 
-        return pixels.to(self.device), masks.to(self.device)
+        return pixels, masks # Return on CPU
 
 
 class Cache3D_Buffer(Cache3D_Base):
@@ -303,6 +303,9 @@ class Cache3D_Buffer(Cache3D_Base):
             # Now squeeze B and 1 dims
             target_depth = target_depth.squeeze()
             target_mask = target_mask.squeeze()
+
+            target_depth = target_depth.to(self.device)
+            target_mask = target_mask.to(self.device)
             
             if alignment_method == "rigid":
                 new_depth = (
@@ -369,7 +372,6 @@ class Cache3D_Buffer(Cache3D_Base):
                 self.input_points = torch.cat([new_points[:, None, None, None], self.input_points], 2)
                 if self.input_mask is not None:
                     self.input_mask = torch.cat([new_mask[:, None, None, None], self.input_mask], 2)
-                # --- FIX: Concatenate boundary mask ---
                 if self.boundary_mask is not None:
                     self.boundary_mask = torch.cat([new_boundary_mask, self.boundary_mask], 2)
             else:
@@ -377,7 +379,6 @@ class Cache3D_Buffer(Cache3D_Base):
                 self.input_points[:, :, 0] = new_points[:, None, None]
                 if self.input_mask is not None:
                     self.input_mask[:, :, 0] = new_mask[:, None, None]
-                # --- FIX: Update boundary mask tip ---
                 if self.boundary_mask is not None:
                     self.boundary_mask[:, :, 0] = new_boundary_mask[:, :, 0]
         else:
@@ -388,7 +389,6 @@ class Cache3D_Buffer(Cache3D_Base):
                      self.input_mask = new_mask[:, None, None, None]
                 else:
                      self.input_mask[:, :, 0] = new_mask[:, None, None]
-            # --- FIX: Set boundary mask ---
             if self.boundary_mask is not None:
                 self.boundary_mask = new_boundary_mask
 
@@ -402,21 +402,24 @@ class Cache3D_Buffer(Cache3D_Base):
     ):
         assert start_frame_idx == 0, "start_frame_idx must be 0 for Cache3D_Buffer"
 
-        output_device = target_w2cs.device
         target_w2cs = target_w2cs.to(self.weight_dtype).to(self.device)
         target_intrinsics = target_intrinsics.to(self.weight_dtype).to(self.device)
         pixels, masks = super().render_cache(
             target_w2cs, target_intrinsics, render_depth
         )
-        pixels = pixels.to(output_device)
-        masks = masks.to(output_device)
+        
         if not render_depth:
-            noise = torch.randn(pixels.shape, generator=self.generator, device=pixels.device, dtype=pixels.dtype)
+            cpu_gen = torch.Generator(device='cpu')
+            if self.generator is not None:
+                cpu_gen.manual_seed(self.generator.initial_seed())
+            
+            noise = torch.randn(pixels.shape, generator=cpu_gen, device='cpu', dtype=pixels.dtype)
             per_buffer_noise = (
-                torch.arange(start=pixels.shape[2] - 1, end=-1, step=-1, device=pixels.device)
+                torch.arange(start=pixels.shape[2] - 1, end=-1, step=-1, device='cpu', dtype=pixels.dtype)
                 * self.noise_aug_strength
             )
-            pixels = pixels + noise * per_buffer_noise.reshape(1, 1, -1, 1, 1, 1)  # B, F, N, C, H, W
+            pixels = pixels + noise * per_buffer_noise.reshape(1, 1, -1, 1, 1, 1)
+
         return pixels, masks
 
 

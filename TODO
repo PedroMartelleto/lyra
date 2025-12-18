@@ -1,4 +1,8 @@
-Go back in time with big_cache
+- Visualize Z-buffering
+- Re-read GEN3C, specially architecture
+
+
+------------------------
 
 accelerate launch sample.py --config configs/demo/lyra_static.yaml
 
