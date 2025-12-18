@@ -473,13 +473,8 @@ def demo_sequential(args):
             input_masks = torch.cat([recent_mask, aggregated_history_mask], dim=2)
         
         else:
-            # If no history yet, just replicate recent or use zeros?
-            # Model expects 2 frames. If we only have 1, usually we pad with zeros or replicate.
-            # Let's pad with zeros for slot 2.
-            zeros_rgb = torch.zeros_like(recent_rgb)
-            zeros_mask = torch.zeros_like(recent_mask)
-            input_warps = torch.cat([recent_rgb, zeros_rgb], dim=2)
-            input_masks = torch.cat([recent_mask, zeros_mask], dim=2)
+            input_warps = recent_rgb
+            input_masks = recent_mask
         
         input_warps = input_warps.to(device)
         input_masks = input_masks.to(device)
